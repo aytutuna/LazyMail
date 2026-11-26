@@ -156,3 +156,56 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/ios.xcresult" \
             CORE_VERSION="$version" \
             CODE_SIGNING_ALLOWED=NO
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 4.1.2
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.3.13750724
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/libs.versions.toml
+            android/gradle/wrapper/gradle-wrapper.properties
+      - name: Cache cargo-ndk
+        id: ndk
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ env.CARGO_NDK_VERSION }}-${{ runner.os }}
+      - name: Install cargo-ndk
+        if: steps.ndk.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version $CARGO_NDK_VERSION --locked
+      - name: Build the core
+        run: android/build-core.sh
+      - name: Build the app
+        working-directory: android
+        run: ./gradlew assembleDebug --console=plain
+      - name: Check the libraries are in the APK
+        run: |
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/apk.txt"
+          grep -q 'lib/arm64-v8a/liblazymail_core.so' "$RUNNER_TEMP/apk.txt"
+          grep -q 'lib/x86_64/liblazymail_core.so' "$RUNNER_TEMP/apk.txt"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          working-directory: android
+          script: ./gradlew connectedDebugAndroidTest --console=plain
