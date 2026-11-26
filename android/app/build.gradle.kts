@@ -33,9 +33,6 @@ android {
         buildConfig = true
         compose = true
     }
-
-    // Written by build-core.sh.
-    sourceSets.getByName("main").java.directories.add("src/main/generated")
 }
 
 dependencies {
