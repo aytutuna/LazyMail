@@ -10,3 +10,11 @@ apple/build/
 apple/LazyMailCore.xcframework/
 apple/LazyMail/Generated/
 apple/*/Info.plist
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/jniLibs/
+android/app/src/main/generated/
