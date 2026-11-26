@@ -1,0 +1,14 @@
+{
+  "name": "lazymail-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/viewer.ts src/editor.ts --bundle --format=esm --target=es2022 --outdir=dist && cp viewer.html editor.html dist/",
+    "check": "tsc --noEmit",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
