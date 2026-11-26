@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/viewer.ts src/editor.ts --bundle --format=esm --target=es2022 --outdir=dist && cp viewer.html editor.html dist/",
+    "build": "esbuild src/viewer.ts src/editor.ts --bundle --format=esm --target=es2022 --outdir=dist && node -e \"for (const f of ['viewer.html', 'editor.html']) require('fs').copyFileSync(f, 'dist/' + f)\"",
     "check": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\""
   },
