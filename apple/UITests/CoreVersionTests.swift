@@ -11,6 +11,8 @@ final class CoreVersionTests: XCTestCase {
 
         let version = app.staticTexts["CoreVersion"]
         XCTAssertTrue(version.waitForExistence(timeout: 30))
-        XCTAssertEqual(version.label, expected)
+        // macOS exposes a static text's string as its value, iOS as its label
+        let shown = version.label.isEmpty ? (version.value as? String ?? "") : version.label
+        XCTAssertEqual(shown, expected)
     }
 }
