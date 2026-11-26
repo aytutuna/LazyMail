@@ -1,5 +1,5 @@
 # Starts the app and checks that the window shows the core version from Cargo.toml.
-# Windows PowerShell 5.1 (UI Automation is not in PowerShell 7).
+# Run with Windows PowerShell 5.1, which loads UIAutomationClient without extra setup.
 #   powershell windows/smoke.ps1 -Exe <path to LazyMail.exe> [-Seconds 30]
 param(
     [Parameter(Mandatory)] [string] $Exe,
