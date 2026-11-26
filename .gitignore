@@ -3,3 +3,10 @@ target/
 .vscode/
 *.iml
 .DS_Store
+
+# Apple
+apple/*.xcodeproj
+apple/build/
+apple/LazyMailCore.xcframework/
+apple/LazyMail/Generated/
+apple/*/Info.plist
