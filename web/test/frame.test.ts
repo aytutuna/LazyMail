@@ -8,6 +8,12 @@ test("the policy meta is exact", () => {
   assert.ok(frameDocument("hi").includes(csp));
 });
 
+test("the policy meta is in head", () => {
+  const doc = frameDocument("hi");
+  const head = doc.slice(doc.indexOf("<head>"), doc.indexOf("</head>"));
+  assert.ok(head.includes(csp));
+});
+
 test("the email comes after the policy", () => {
   const email = `<meta http-equiv="Content-Security-Policy" content="default-src *"><p>hi</p>`;
   const doc = frameDocument(email);
