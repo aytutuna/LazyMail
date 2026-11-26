@@ -1,0 +1,11 @@
+<Window
+    x:Class="LazyMail.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ap="using:Microsoft.UI.Xaml.Automation"
+    Title="Lazy Mail">
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+        <TextBlock Text="Lazy Mail" />
+        <TextBlock x:Name="Version" ap:AutomationProperties.AutomationId="CoreVersion" />
+    </StackPanel>
+</Window>
