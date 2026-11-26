@@ -120,12 +120,6 @@ jobs:
           echo "$XCODEGEN_SHA256  $zip" | shasum -a 256 -c -
           unzip -q "$zip" -d "$RUNNER_TEMP/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
-      - name: Build the core
-        run: apple/build-core.sh
-      - name: Write the project
-        run: |
-          xcodegen --version
-          xcodegen generate --spec apple/project.yml
       - name: Pick the simulators
         id: sim
         run: |
@@ -133,11 +127,17 @@ jobs:
           pick() {
             jq -r --arg p "$1" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and (.name | startswith($p)))][0].udid' "$RUNNER_TEMP/sims.json"
           }
-          echo "iphone=$(pick 'iPhone 17')" >> "$GITHUB_OUTPUT"
+          iphone=$(pick 'iPhone 17')
+          echo "iphone=$iphone" >> "$GITHUB_OUTPUT"
           echo "ipad=$(pick 'iPad')" >> "$GITHUB_OUTPUT"
+          # a cold boot takes minutes, let it run while the core builds
+          xcrun simctl boot "$iphone"
+      - name: Build the core
+        run: apple/build-core.sh
+      - name: Write the project
+        run: xcodegen generate --spec apple/project.yml
       - name: Build for the iPad
         run: |
-          set -o pipefail
           xcodebuild build \
             -project apple/LazyMail.xcodeproj \
             -scheme LazyMail \
