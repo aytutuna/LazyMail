@@ -5,7 +5,7 @@
   "scripts": {
     "build": "esbuild src/viewer.ts src/editor.ts --bundle --format=esm --target=es2022 --outdir=dist && cp viewer.html editor.html dist/",
     "check": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.ts\""
   },
   "devDependencies": {
     "esbuild": "0.28.2",
