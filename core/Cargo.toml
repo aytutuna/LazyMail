@@ -10,4 +10,4 @@ publish.workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-uniffi = "0.33.0"
+uniffi = "=0.32.0"
