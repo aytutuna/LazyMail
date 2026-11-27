@@ -30,6 +30,9 @@ pub enum Source {
 pub struct Found {
     pub settings: ServerSettings,
     pub source: Source,
+    /// DNS is not verified, so an SRV answer pointing outside the address's own domain
+    /// must be shown to the person before the password is sent there (RFC 6186 section 6).
+    pub needs_confirmation: bool,
 }
 
 /// Finds server settings: the built-in table, Mozilla's ISPDB, the provider's own
@@ -40,6 +43,7 @@ pub async fn discover(net: &impl Network, address: &str) -> Option<Found> {
         return Some(Found {
             settings,
             source: Source::Builtin,
+            needs_confirmation: false,
         });
     }
 
@@ -55,6 +59,7 @@ pub async fn discover(net: &impl Network, address: &str) -> Option<Found> {
         return Some(Found {
             settings,
             source: Source::Ispdb,
+            needs_confirmation: false,
         });
     }
     for url in &own {
@@ -62,10 +67,14 @@ pub async fn discover(net: &impl Network, address: &str) -> Option<Found> {
             return Some(Found {
                 settings,
                 source: Source::ProviderAutoconfig,
+                needs_confirmation: false,
             });
         }
     }
     srv_settings(net, &domain).await.map(|settings| Found {
+        needs_confirmation: ![&settings.imap, &settings.smtp]
+            .iter()
+            .all(|e| within(&e.host, &domain)),
         settings,
         source: Source::Srv,
     })
@@ -120,12 +129,7 @@ fn endpoint(node: roxmltree::Node, domain: &str) -> Option<Endpoint> {
         "%EMAILLOCALPART%" => Login::LocalPart,
         _ => return None,
     };
-    let password_auth = |a: &str| {
-        matches!(
-            a,
-            "password-cleartext" | "plain" | "password-encrypted" | "secure"
-        )
-    };
+    let password_auth = |a: &str| matches!(a, "password-cleartext" | "plain");
     let mut auth = node
         .children()
         .filter(|n| n.has_tag_name("authentication"))
@@ -182,6 +186,11 @@ async fn srv_endpoint(
         }
     }
     None
+}
+
+fn within(host: &str, domain: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == domain || host.ends_with(&format!(".{domain}"))
 }
 
 /// The domain of an address, only if it is safe to put in a URL or a DNS name.
@@ -361,10 +370,41 @@ mod tests {
         );
         let found = discover(&f, "ann@example.net").await.unwrap();
         assert_eq!(found.source, Source::Srv);
+        assert!(!found.needs_confirmation);
         assert_eq!(found.settings.imap.host, "a.example.net");
         assert_eq!(found.settings.imap.security, Security::Tls);
         assert_eq!(found.settings.smtp.security, Security::StartTls);
         assert_eq!(found.settings.smtp.port, 587);
+    }
+
+    #[tokio::test]
+    async fn srv_target_outside_the_domain_needs_confirmation() {
+        let mut f = Fixtures::default();
+        f.srv.insert(
+            "_imaps._tcp.example.net".into(),
+            vec![srv(0, 1, 993, "imap.elsewhere.org.")],
+        );
+        f.srv.insert(
+            "_submissions._tcp.example.net".into(),
+            vec![srv(0, 1, 465, "smtp.example.net.")],
+        );
+        let found = discover(&f, "ann@example.net").await.unwrap();
+        assert!(found.needs_confirmation);
+        let mut f = Fixtures::default();
+        f.srv.insert(
+            "_imaps._tcp.example.net".into(),
+            vec![srv(0, 1, 993, "notexample.net.")],
+        );
+        f.srv.insert(
+            "_submissions._tcp.example.net".into(),
+            vec![srv(0, 1, 465, "smtp.example.net.")],
+        );
+        assert!(
+            discover(&f, "ann@example.net")
+                .await
+                .unwrap()
+                .needs_confirmation
+        );
     }
 
     #[tokio::test]
@@ -393,7 +433,8 @@ mod tests {
         assert_eq!(Provider::detect("a@live.mycompany.com"), Provider::Other);
         assert_eq!(Provider::detect("a@hotmail.fr"), Provider::Outlook);
         assert_eq!(Provider::detect("a@live.co.uk"), Provider::Outlook);
-        assert_eq!(Provider::detect("a@yahoo.co.jp"), Provider::Yahoo);
+        assert_eq!(Provider::detect("a@yahoo.co.uk"), Provider::Yahoo);
+        assert_eq!(Provider::detect("a@yahoo.co.jp"), Provider::Other);
         assert_eq!(Provider::detect("a@icloud.com"), Provider::ICloud);
         assert_eq!(Provider::detect("a@pm.me"), Provider::ProtonBridge);
     }
