@@ -44,20 +44,24 @@ pub trait Wrapper: Send + Sync {
 
 /// In-memory wrapper for tests. Its key lives only as long as the process, so nothing it
 /// wrapped can be read by a later run.
+#[cfg(feature = "test-wrapper")]
 pub struct TestWrapper([u8; 32]);
 
+#[cfg(feature = "test-wrapper")]
 impl TestWrapper {
     pub fn new() -> TestWrapper {
         TestWrapper(crypto::random())
     }
 }
 
+#[cfg(feature = "test-wrapper")]
 impl Default for TestWrapper {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "test-wrapper")]
 impl Wrapper for TestWrapper {
     fn wrap(&self, aad: &[u8], plain: &[u8]) -> Result<Vec<u8>> {
         Ok(crypto::seal(&self.0, aad, plain))

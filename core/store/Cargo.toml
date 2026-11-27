@@ -15,5 +15,10 @@ sha2 = "0.11.2"
 thiserror = "2.0.21"
 zeroize = "1.8.2"
 
+[features]
+# In-memory wrapper for tests; an app that enables it loses its secrets at every launch.
+test-wrapper = []
+
 [dev-dependencies]
+lazymail-store = { path = ".", features = ["test-wrapper"] }
 tempfile = "3.27.0"

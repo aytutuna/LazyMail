@@ -529,6 +529,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom",
  "hkdf",
+ "lazymail-store",
  "rusqlite",
  "sha2",
  "tempfile",

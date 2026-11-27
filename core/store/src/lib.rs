@@ -24,7 +24,9 @@ pub use logs::{SettingChange, UndoEntry, UNDO_DAYS};
 pub use messages::{Attachment, Flags, Message, NewAttachment, NewMessage};
 pub use outbox::{OutboxItem, OutboxState};
 pub use search::{SearchHit, SearchQuery, MARK_END, MARK_START};
-pub use wrap::{load_or_create_key, StoreKey, TestWrapper, Wrapper};
+#[cfg(feature = "test-wrapper")]
+pub use wrap::TestWrapper;
+pub use wrap::{load_or_create_key, StoreKey, Wrapper};
 
 /// One account's encrypted database and attachment files.
 pub struct Store {
