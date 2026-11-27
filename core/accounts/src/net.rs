@@ -21,7 +21,9 @@ impl SystemNetwork {
         SystemNetwork {
             http: reqwest::Client::builder()
                 // The system's verifier, since phones have no root files to load.
-                // Android needs rustls_platform_verifier's init from the native layer first.
+                // Android needs two inits from the native layer first: rustls_platform_verifier's,
+                // and ndk_context's, which the DNS config below reads through JNI (it also
+                // needs ACCESS_NETWORK_STATE, or SRV lookups quietly find nothing).
                 .use_preconfigured_tls(tls_config())
                 .timeout(TIMEOUT)
                 .https_only(true)

@@ -196,7 +196,7 @@ fn within(host: &str, domain: &str) -> bool {
 /// The domain of an address, only if it is safe to put in a URL or a DNS name.
 fn valid_domain(address: &str) -> Option<String> {
     let (local, domain) = address.rsplit_once('@')?;
-    let domain = domain.trim().to_ascii_lowercase();
+    let domain = idna::domain_to_ascii(domain.trim()).ok()?;
     let ok = !local.is_empty()
         && domain.contains('.')
         && !domain.starts_with(['.', '-'])
@@ -223,6 +223,14 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn international_domains_are_looked_up_as_punycode() {
+        assert_eq!(
+            valid_domain("a@bücher.example").as_deref(),
+            Some("xn--bcher-kva.example")
+        );
+    }
 
     #[derive(Default)]
     struct Fixtures {
