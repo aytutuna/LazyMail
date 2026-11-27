@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 use crate::account::{Account, MailAccess};
 use crate::provider::Provider;
 use crate::sasl::TokenError;
 
 pub const RETRY_INTERVAL: Duration = Duration::from_secs(3600);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthFailure {
     Rejected,
     /// Gmail refused an app password it had accepted before.
@@ -41,10 +43,19 @@ impl AuthFailure {
     }
 }
 
-/// Reads the text of a failed IMAP or SMTP login.
-pub fn classify_login_error(provider: Provider, server_text: &str) -> AuthFailure {
+/// Reads the text of a failed IMAP or SMTP login. `None` means the refusal is temporary
+/// (a busy or limited server), which says nothing about the credentials.
+/// `worked_before` is false while a password is first being added.
+pub fn classify_login_error(
+    provider: Provider,
+    server_text: &str,
+    worked_before: bool,
+) -> Option<AuthFailure> {
     let t = server_text.to_ascii_lowercase();
-    match provider {
+    if is_temporary(&t) {
+        return None;
+    }
+    Some(match provider {
         Provider::Microsoft365
             if [
                 "user is authenticated but not connected",
@@ -61,15 +72,40 @@ pub fn classify_login_error(provider: Provider, server_text: &str) -> AuthFailur
             AuthFailure::AppPasswordRequired
         }
         Provider::Gmail
-            if t.contains("authenticationfailed") || t.contains("invalid credentials") =>
+            if worked_before
+                && [
+                    "authenticationfailed",
+                    "invalid credentials",
+                    "username and password not accepted",
+                    "5.7.8",
+                ]
+                .iter()
+                .any(|s| t.contains(s)) =>
         {
             AuthFailure::GoogleAppPasswordRefused
         }
         _ => AuthFailure::Rejected,
-    }
+    })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// RFC 5530 temporary codes, Gmail's connection limit, and SMTP 4yz replies.
+fn is_temporary(t: &str) -> bool {
+    let smtp_4xx = {
+        let b = t.trim_start().as_bytes();
+        b.len() > 2 && b[0] == b'4' && b[1].is_ascii_digit() && b[2].is_ascii_digit()
+    };
+    smtp_4xx
+        || [
+            "[unavailable]",
+            "[inuse]",
+            "[limit]",
+            "too many simultaneous connections",
+        ]
+        .iter()
+        .any(|s| t.contains(s))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AccountState {
     SignedIn,
     NeedsSignIn {
@@ -91,7 +127,8 @@ pub enum Event {
     },
 }
 
-#[derive(Default)]
+/// Kept by the store between launches, so a restart neither notifies again nor skips the hour.
+#[derive(Default, Serialize, Deserialize)]
 pub struct SignIn {
     states: HashMap<String, AccountState>,
 }
@@ -133,9 +170,16 @@ impl SignIn {
                 last_attempt,
                 ..
             }) => {
+                let changed = *reason != failure;
                 *reason = failure;
                 *last_attempt = now;
-                None
+                // Google's text and the new-password button matter more than the first reason.
+                (changed && failure == AuthFailure::GoogleAppPasswordRefused).then(|| {
+                    Event::NeedsSignIn {
+                        account_id: account.id.clone(),
+                        reason: failure,
+                    }
+                })
             }
             _ => {
                 self.states.insert(
@@ -252,7 +296,9 @@ mod tests {
         let f = classify_login_error(
             Provider::Microsoft365,
             "NO LOGIN failed. BAD User is authenticated but not connected.",
-        );
+            true,
+        )
+        .unwrap();
         assert_eq!(f, AuthFailure::GraphNeeded);
         assert_eq!(
             s.report_failure(&mut a, f, at(0)),
@@ -269,12 +315,12 @@ mod tests {
     fn smtp_auth_disabled_text_is_recognised() {
         let text = "535 5.7.139 Authentication unsuccessful, SmtpClientAuthentication is disabled for the Tenant.";
         assert_eq!(
-            classify_login_error(Provider::Microsoft365, text),
-            AuthFailure::GraphNeeded
+            classify_login_error(Provider::Microsoft365, text, true),
+            Some(AuthFailure::GraphNeeded)
         );
         assert_eq!(
-            classify_login_error(Provider::Outlook, text),
-            AuthFailure::Rejected
+            classify_login_error(Provider::Outlook, text, true),
+            Some(AuthFailure::Rejected)
         );
     }
 
@@ -283,7 +329,9 @@ mod tests {
         let f = classify_login_error(
             Provider::Gmail,
             "NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)",
-        );
+            true,
+        )
+        .unwrap();
         assert_eq!(f, AuthFailure::GoogleAppPasswordRefused);
         assert_eq!(
             f.message(),
@@ -292,10 +340,81 @@ mod tests {
         assert_eq!(
             classify_login_error(
                 Provider::Gmail,
-                "NO [ALERT] Application-specific password required: https://support.google.com/accounts/answer/185833"
+                "NO [ALERT] Application-specific password required: https://support.google.com/accounts/answer/185833",
+                true
             ),
-            AuthFailure::AppPasswordRequired
+            Some(AuthFailure::AppPasswordRequired)
         );
+    }
+
+    #[test]
+    fn gmail_smtp_refusal_is_the_google_one() {
+        let text = "535-5.7.8 Username and Password not accepted. For more information, go to";
+        assert_eq!(
+            classify_login_error(Provider::Gmail, text, true),
+            Some(AuthFailure::GoogleAppPasswordRefused)
+        );
+    }
+
+    #[test]
+    fn a_new_gmail_password_that_fails_is_just_rejected() {
+        assert_eq!(
+            classify_login_error(
+                Provider::Gmail,
+                "NO [AUTHENTICATIONFAILED] Invalid credentials",
+                false
+            ),
+            Some(AuthFailure::Rejected)
+        );
+    }
+
+    #[test]
+    fn temporary_refusals_are_not_sign_in_problems() {
+        for (p, text) in [
+            (Provider::Yahoo, "NO [UNAVAILABLE] LOGIN error"),
+            (
+                Provider::Gmail,
+                "NO [ALERT] Too many simultaneous connections. (Failure)",
+            ),
+            (
+                Provider::Gmail,
+                "454 4.7.0 Too many login attempts, please try again later.",
+            ),
+            (Provider::Fastmail, "NO [INUSE] mailbox busy"),
+        ] {
+            assert_eq!(classify_login_error(p, text, true), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn google_reason_arriving_later_notifies_again() {
+        let mut s = SignIn::default();
+        let mut a = account("g", Provider::Gmail);
+        s.report_failure(&mut a, AuthFailure::Rejected, at(0));
+        let ev = s.report_failure(&mut a, AuthFailure::GoogleAppPasswordRefused, at(5));
+        assert_eq!(
+            ev,
+            Some(Event::NeedsSignIn {
+                account_id: "g".into(),
+                reason: AuthFailure::GoogleAppPasswordRefused
+            })
+        );
+        assert_eq!(
+            s.report_failure(&mut a, AuthFailure::GoogleAppPasswordRefused, at(9)),
+            None
+        );
+    }
+
+    #[test]
+    fn state_survives_a_restart_and_still_waits_the_hour() {
+        let mut s = SignIn::default();
+        let mut a = account("a", Provider::Yahoo);
+        s.report_failure(&mut a, AuthFailure::Rejected, at(100));
+        let saved = serde_json::to_string(&s).unwrap();
+        let mut back: SignIn = serde_json::from_str(&saved).unwrap();
+        assert!(back.work_paused("a"));
+        assert!(!back.try_retry("a", at(100 + 3599)));
+        assert!(back.try_retry("a", at(100 + 3600)));
     }
 
     #[test]
