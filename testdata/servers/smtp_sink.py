@@ -42,7 +42,7 @@ async def read_data(reader):
             return None if bare else b"".join(lines)
         if b"\n" in row[:-2] or b"\r" in row[:-2]:
             bare = True
-        lines.append(row[1:] if row.startswith(b"..") else row)
+        lines.append(row[1:] if row.startswith(b".") else row)
 
 
 def address(cmd):
@@ -91,13 +91,20 @@ async def session(reader, writer, tls):
                             await writer.drain()
                             blob = await readline(reader)
                         _, user, password = base64.b64decode(blob).decode().split("\0")
-                    else:
-                        send("334 " + base64.b64encode(b"Username:").decode())
-                        await writer.drain()
-                        user = base64.b64decode(await readline(reader)).decode()
+                    elif parts[1].upper() == "LOGIN":
+                        if len(parts) > 2:
+                            user = base64.b64decode(parts[2]).decode()
+                        else:
+                            send("334 " + base64.b64encode(b"Username:").decode())
+                            await writer.drain()
+                            user = base64.b64decode(await readline(reader)).decode()
                         send("334 " + base64.b64encode(b"Password:").decode())
                         await writer.drain()
                         password = base64.b64decode(await readline(reader)).decode()
+                    else:
+                        send("504 5.5.4 mechanism not supported")
+                        await writer.drain()
+                        continue
                 except (IndexError, ValueError):
                     send("501 5.5.2 malformed AUTH")
                     await writer.drain()
