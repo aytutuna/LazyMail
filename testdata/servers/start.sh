@@ -9,7 +9,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 # State and ports depend on the checkout, so two worktrees don't stop each other.
 id=$(printf %s "$here" | cksum | cut -d' ' -f1)
-state=${LAZYMAIL_SERVERS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers-$id}
+state=${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers-$id
 base=$((15000 + id % 1500 * 8))
 imap_port=${LAZYMAIL_IMAP_PORT:-$base}
 imaps_port=${LAZYMAIL_IMAPS_PORT:-$((base + 1))}
@@ -27,6 +27,10 @@ if [ ! -x "$dovecot" ]; then
   exit 1
 fi
 export LD_LIBRARY_PATH=$libexec:$libexec/modules/old-stats${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+case $("$dovecot" --version) in
+  2.3*) ;;
+  *) echo "dovecot.conf.in is written for Dovecot 2.3" >&2; exit 1 ;;
+esac
 
 "$here/stop.sh" >/dev/null 2>&1 || true
 rm -rf "$state"
