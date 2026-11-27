@@ -101,7 +101,14 @@ impl Store {
     }
 
     pub fn outbox_mark_sent(&self, id: i64) -> Result<()> {
-        self.set_state(id, "sent")
+        let n = self.conn.execute(
+            "UPDATE outbox SET state = 'sent' WHERE id = ?1 AND state = 'sending'",
+            [id],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound);
+        }
+        Ok(())
     }
 
     /// Records a failed attempt. With a time the item is queued again then; without one it is
@@ -111,7 +118,7 @@ impl Store {
             "UPDATE outbox SET attempts = attempts + 1, last_error = ?2,
                  state = CASE WHEN ?3 IS NULL THEN 'failed' ELSE 'queued' END,
                  next_try = coalesce(?3, next_try)
-             WHERE id = ?1",
+             WHERE id = ?1 AND state = 'sending'",
             params![id, error, retry_at],
         )?;
         if n == 0 {
@@ -120,9 +127,12 @@ impl Store {
         Ok(())
     }
 
+    /// Retry of a failed item, or a new time for one still waiting. Never touches an item that
+    /// is sending or sent.
     pub fn outbox_requeue(&self, id: i64, at: i64) -> Result<()> {
         let n = self.conn.execute(
-            "UPDATE outbox SET state = 'queued', next_try = ?2 WHERE id = ?1",
+            "UPDATE outbox SET state = 'queued', next_try = ?2
+             WHERE id = ?1 AND state IN ('failed', 'queued')",
             params![id, at],
         )?;
         if n == 0 {
@@ -143,17 +153,6 @@ impl Store {
     pub fn outbox_remove(&self, id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM outbox WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
-    fn set_state(&self, id: i64, state: &str) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE outbox SET state = ?2 WHERE id = ?1",
-            params![id, state],
-        )?;
-        if n == 0 {
-            return Err(Error::NotFound);
-        }
         Ok(())
     }
 }
