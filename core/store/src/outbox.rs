@@ -25,7 +25,8 @@ impl OutboxState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxItem {
     pub id: i64,
-    /// Fixed when queued, so a retry after a lost reply never sends a second message.
+    /// Fixed when queued. A retry after a lost reply must look in Sent for this id first,
+    /// since SMTP servers do not drop a repeated Message-ID.
     pub message_id: String,
     pub raw: Vec<u8>,
     pub state: OutboxState,
@@ -87,8 +88,16 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Only a queued item can start sending.
     pub fn outbox_begin_send(&self, id: i64) -> Result<()> {
-        self.set_state(id, "sending")
+        let n = self.conn.execute(
+            "UPDATE outbox SET state = 'sending' WHERE id = ?1 AND state = 'queued'",
+            [id],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound);
+        }
+        Ok(())
     }
 
     pub fn outbox_mark_sent(&self, id: i64) -> Result<()> {
