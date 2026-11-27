@@ -6,6 +6,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::wrap::write_durably;
 use crate::{crypto, Error, Result, Store};
 
+const SWEEP_GRACE: std::time::Duration = std::time::Duration::from_secs(600);
+
 impl Store {
     fn blob_path(&self, name: &str) -> PathBuf {
         self.dir.join("attachments").join(name)
@@ -27,7 +29,8 @@ impl Store {
         }
     }
 
-    /// Removes files no row refers to: leftovers of a crash or a rolled back write.
+    /// Removes files no row refers to: leftovers of a crash or a rolled back write. A file from
+    /// the last few minutes may belong to a write another open store has not committed yet.
     pub(crate) fn sweep_attachments(&self) -> Result<()> {
         let known: HashSet<String> = self
             .conn
@@ -36,7 +39,13 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         for entry in std::fs::read_dir(self.dir.join("attachments"))? {
             let entry = entry?;
-            if !known.contains(entry.file_name().to_string_lossy().as_ref()) {
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < SWEEP_GRACE);
+            if !fresh && !known.contains(entry.file_name().to_string_lossy().as_ref()) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
