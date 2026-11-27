@@ -1,5 +1,12 @@
 use crate::provider::Provider;
 
+// One place for the app name, which is still to be decided.
+macro_rules! app_name {
+    () => {
+        "Lazy Mail"
+    };
+}
+
 /// Where to make an app password and what to click, in English; the one place to localize.
 pub struct Guide {
     pub url: &'static str,
@@ -12,7 +19,7 @@ pub fn app_password_guide(provider: Provider) -> Option<Guide> {
             url: "https://myaccount.google.com/apppasswords",
             steps: &[
                 "Turn on 2-Step Verification for the Google account if it is off.",
-                "Open the App passwords page and name the password Lazy Mail.",
+                concat!("Open the App passwords page and name the password ", app_name!(), "."),
                 "Copy the 16 letters Google shows and paste them here.",
                 "Workspace accounts: if the page is missing, ask the administrator to allow app passwords.",
             ],
@@ -21,7 +28,7 @@ pub fn app_password_guide(provider: Provider) -> Option<Guide> {
             url: "https://account.apple.com/account/manage",
             steps: &[
                 "Sign in and open Sign-In and Security.",
-                "Choose App-Specific Passwords and make one named Lazy Mail.",
+                concat!("Choose App-Specific Passwords and make one named ", app_name!(), "."),
                 "Copy it and paste it here.",
             ],
         },
@@ -29,14 +36,14 @@ pub fn app_password_guide(provider: Provider) -> Option<Guide> {
             url: "https://login.yahoo.com/account/security",
             steps: &[
                 "Open Account security and choose Generate app password.",
-                "Name it Lazy Mail and copy the password Yahoo shows.",
+                concat!("Name it ", app_name!(), " and copy the password Yahoo shows."),
             ],
         },
         Provider::Aol => Guide {
             url: "https://login.aol.com/account/security",
             steps: &[
                 "Open Account security and choose Generate app password.",
-                "Name it Lazy Mail and copy the password AOL shows.",
+                concat!("Name it ", app_name!(), " and copy the password AOL shows."),
             ],
         },
         Provider::Fastmail => Guide {
