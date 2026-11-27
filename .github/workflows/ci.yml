@@ -26,6 +26,22 @@ jobs:
         run: cargo test
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  core-servers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Dovecot
+        run: sudo apt-get install -y --no-install-recommends dovecot-core dovecot-imapd
+      - name: Test against the servers
+        run: |
+          eval "$(testdata/servers/start.sh)"
+          cargo test --workspace -- --include-ignored
+      - name: Stop the servers
+        if: always()
+        run: testdata/servers/stop.sh
+
   windows:
     runs-on: windows-latest
     env:
