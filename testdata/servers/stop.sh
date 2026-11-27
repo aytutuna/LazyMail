@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-state=${LAZYMAIL_SERVERS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers}
+here=$(cd "$(dirname "$0")" && pwd)
+id=$(printf %s "$here" | cksum | cut -d' ' -f1)
+state=${LAZYMAIL_SERVERS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers-$id}
 for pidfile in "$state/run/master.pid" "$state/smtp.pid"; do
   [ -f "$pidfile" ] || continue
   pid=$(cat "$pidfile")

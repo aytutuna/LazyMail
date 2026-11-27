@@ -7,11 +7,14 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-state=${LAZYMAIL_SERVERS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers}
-imap_port=${LAZYMAIL_IMAP_PORT:-14143}
-imaps_port=${LAZYMAIL_IMAPS_PORT:-14993}
-smtp_port=${LAZYMAIL_SMTP_PORT:-12525}
-smtps_port=${LAZYMAIL_SMTPS_PORT:-12465}
+# State and ports depend on the checkout, so two worktrees don't stop each other.
+id=$(printf %s "$here" | cksum | cut -d' ' -f1)
+state=${LAZYMAIL_SERVERS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/lazymail-servers-$id}
+base=$((15000 + id % 1500 * 8))
+imap_port=${LAZYMAIL_IMAP_PORT:-$base}
+imaps_port=${LAZYMAIL_IMAPS_PORT:-$((base + 1))}
+smtp_port=${LAZYMAIL_SMTP_PORT:-$((base + 2))}
+smtps_port=${LAZYMAIL_SMTPS_PORT:-$((base + 3))}
 
 root=${DOVECOT_ROOT:-}
 if [ -z "$root" ] && [ -x "$HOME/tools/dovecot/usr/sbin/dovecot" ]; then
@@ -45,6 +48,13 @@ sed \
 # through short symlinks.
 if [ ! -x /usr/bin/doveconf ]; then
   mkdir "$state/lib"
+  # The libdovecot paths are fixed in length, so the links need fixed names in /tmp.
+  for l in lb lm; do
+    if [ -e "/tmp/$l" ] && { [ ! -L "/tmp/$l" ] || [ ! -O "/tmp/$l" ]; }; then
+      echo "/tmp/$l exists and is not a symlink of yours" >&2
+      exit 1
+    fi
+  done
   ln -sfn "$root/usr/bin" /tmp/lb
   ln -sfn "$libexec" /tmp/lm
   perl -0777 -pe 's|/usr/bin/doveconf|/tmp/lb/doveconf\x00|g; s|/usr/lib/dovecot/modules|/tmp/lm/modules\x00\x00\x00\x00\x00\x00\x00\x00\x00|g' \
