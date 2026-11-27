@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::wrap::write_durably;
 use crate::{crypto, Error, Result, Store};
 
 impl Store {
@@ -9,19 +11,40 @@ impl Store {
         self.dir.join("attachments").join(name)
     }
 
+    /// Deletes a file now, or after the outermost transaction commits so that a rollback
+    /// never leaves a row pointing at a missing file.
+    pub(crate) fn drop_blob(&self, name: String) {
+        if self.depth.get() == 0 {
+            let _ = std::fs::remove_file(self.blob_path(&name));
+        } else {
+            self.doomed.borrow_mut().push(name);
+        }
+    }
+
+    pub(crate) fn remove_doomed(&self) {
+        for name in self.doomed.take() {
+            let _ = std::fs::remove_file(self.blob_path(&name));
+        }
+    }
+
+    /// Removes files no row refers to: leftovers of a crash or a rolled back write.
+    pub(crate) fn sweep_attachments(&self) -> Result<()> {
+        let known: HashSet<String> = self
+            .conn
+            .prepare("SELECT blob FROM attachments WHERE blob IS NOT NULL")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for entry in std::fs::read_dir(self.dir.join("attachments"))? {
+            let entry = entry?;
+            if !known.contains(entry.file_name().to_string_lossy().as_ref()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+
     /// Stores the bytes of an attachment, replacing any earlier copy.
     pub fn put_attachment_data(&self, attachment_id: i64, data: &[u8]) -> Result<()> {
-        let name: String = crypto::random::<16>()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        let path = self.blob_path(&name);
-        let tmp = path.with_extension("tmp");
-        std::fs::write(
-            &tmp,
-            crypto::seal(&self.attachment_key, name.as_bytes(), data),
-        )?;
-        std::fs::rename(&tmp, &path)?;
         let old: Option<String> = self
             .conn
             .query_row(
@@ -31,17 +54,26 @@ impl Store {
             )
             .optional()?
             .ok_or(Error::NotFound)?;
+        let name: String = crypto::random::<16>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        write_durably(
+            &self.blob_path(&name),
+            &crypto::seal(&self.attachment_key, name.as_bytes(), data),
+        )?;
         self.conn.execute(
             "UPDATE attachments SET blob = ?2 WHERE id = ?1",
             params![attachment_id, name],
         )?;
         if let Some(old) = old {
-            let _ = std::fs::remove_file(self.blob_path(&old));
+            self.drop_blob(old);
         }
         Ok(())
     }
 
-    /// Returns the bytes, or None when the attachment was never downloaded or was evicted.
+    /// Returns the bytes, or None when the attachment was never downloaded, was evicted or its
+    /// file has gone missing (the caller downloads it again).
     pub fn attachment_data(&self, attachment_id: i64) -> Result<Option<Vec<u8>>> {
         let name: Option<String> = self
             .conn
@@ -53,8 +85,17 @@ impl Store {
             .optional()?
             .ok_or(Error::NotFound)?;
         let Some(name) = name else { return Ok(None) };
-        let data = std::fs::read(self.blob_path(&name))?;
-        crypto::open(&self.attachment_key, name.as_bytes(), &data).map(Some)
+        match std::fs::read(self.blob_path(&name)) {
+            Ok(data) => crypto::open(&self.attachment_key, name.as_bytes(), &data).map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.conn.execute(
+                    "UPDATE attachments SET blob = NULL WHERE id = ?1",
+                    [attachment_id],
+                )?;
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Removes the downloaded copy of one attachment; the metadata stays.
@@ -79,7 +120,7 @@ impl Store {
             [arg],
         )?;
         for n in names {
-            let _ = std::fs::remove_file(self.blob_path(&n));
+            self.drop_blob(n);
         }
         Ok(())
     }

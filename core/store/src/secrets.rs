@@ -5,7 +5,7 @@ use crate::{Result, Store};
 impl Store {
     /// Keeps a token, password or key encrypted with the device wrapping key.
     pub fn set_secret(&self, name: &str, value: &[u8]) -> Result<()> {
-        let wrapped = self.wrapper.wrap(value)?;
+        let wrapped = self.wrapper.wrap(name.as_bytes(), value)?;
         self.conn.execute(
             "INSERT INTO secrets(name, value) VALUES (?1, ?2)
              ON CONFLICT(name) DO UPDATE SET value = ?2",
@@ -21,7 +21,9 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        wrapped.map(|w| self.wrapper.unwrap(&w)).transpose()
+        wrapped
+            .map(|w| self.wrapper.unwrap(name.as_bytes(), &w))
+            .transpose()
     }
 
     pub fn delete_secret(&self, name: &str) -> Result<()> {
