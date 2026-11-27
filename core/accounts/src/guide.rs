@@ -1,9 +1,8 @@
 use crate::provider::Provider;
 
-// One place for the app name, which is still to be decided.
 macro_rules! app_name {
     () => {
-        "Lazy Mail"
+        "Alazy"
     };
 }
 
