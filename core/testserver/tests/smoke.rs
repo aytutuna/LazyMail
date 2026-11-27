@@ -156,9 +156,11 @@ fn smtp_send_lands_in_the_sink() {
         text.contains("Subject: sink smoke")
             && text.contains("X-Sink-To: <bob@example.test>")
             && text.contains("X-Sink-Auth: yes")
-            && text.contains("
+            && text.contains(
+                "
 hello sink
-")
+",
+            )
     });
     assert!(found);
 }

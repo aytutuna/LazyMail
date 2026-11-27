@@ -2,7 +2,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
@@ -25,7 +25,9 @@ impl Transcript {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if let Some(rest) = line.strip_prefix("C: ") {
+            if line == "C:" {
+                steps.push(Step::Client(String::new()));
+            } else if let Some(rest) = line.strip_prefix("C: ") {
                 steps.push(Step::Client(rest.to_string()));
             } else if let Some(rest) = line.strip_prefix("S: ") {
                 steps.push(Step::Server(rest.to_string()));
@@ -53,7 +55,7 @@ impl ReplayServer {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let handle = thread::spawn(move || {
-            let (stream, _) = listener.accept().map_err(|e| e.to_string())?;
+            let stream = accept(&listener)?;
             play(stream, &transcript)
         });
         Ok(ReplayServer { addr, handle })
@@ -68,6 +70,23 @@ impl ReplayServer {
         self.handle
             .join()
             .map_err(|_| "server thread panicked".to_string())?
+    }
+}
+
+fn accept(listener: &TcpListener) -> Result<TcpStream, String> {
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+                return Ok(stream);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("no client connected: {e}")),
+        }
     }
 }
 
@@ -110,5 +129,12 @@ fn play(stream: TcpStream, transcript: &Transcript) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    // Anything the client sends after the script has ended is a mistake.
+    out.set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|e| e.to_string())?;
+    let mut extra = String::new();
+    match reader.read_line(&mut extra) {
+        Ok(n) if n > 0 => Err(format!("client sent past the end: '{}'", extra.trim_end())),
+        _ => Ok(()),
+    }
 }

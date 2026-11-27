@@ -83,3 +83,19 @@ fn early_close_is_reported() {
 fn bad_line_is_a_parse_error() {
     assert!(Transcript::parse("X: nope\n").is_err());
 }
+
+#[test]
+fn commands_past_the_end_are_reported() {
+    let t = Transcript::parse("S: * OK hi\nC: <tag> NOOP\nS: <tag> OK done\n").unwrap();
+    let server = ReplayServer::start(t).unwrap();
+    let stream = TcpStream::connect(server.addr()).unwrap();
+    (&stream).write_all(b"a1 NOOP\r\na2 NOOP\r\n").unwrap();
+    let err = server.finish().unwrap_err();
+    assert!(err.contains("past the end"), "{err}");
+}
+
+#[test]
+fn bare_client_line_is_an_empty_line() {
+    let t = Transcript::parse("C:\n").unwrap();
+    assert_eq!(t.steps, vec![Step::Client(String::new())]);
+}
