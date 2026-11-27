@@ -1,7 +1,7 @@
 # Written from RFC 3501 and RFC 4315, not recorded from a real account.
 # A server with no MOVE and no CONDSTORE: a client has to COPY, flag \Deleted and UID EXPUNGE.
 S: * OK IMAP4rev1 server ready.
-C: <tag> LOGIN "user@outlook.example" "app password"
+C: <tag> LOGIN "user@example.test" "app password"
 S: <tag> OK LOGIN completed.
 C: <tag> SELECT INBOX
 S: * 3 EXISTS
