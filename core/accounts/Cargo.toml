@@ -9,11 +9,13 @@ publish.workspace = true
 [dependencies]
 base64 = "0.22"
 hickory-resolver = "0.26"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-platform-verifier = "0.6"
 roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt"] }

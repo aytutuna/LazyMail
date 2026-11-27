@@ -1,3 +1,16 @@
+[graph]
+# The core is not built for wasm, where the platform verifier would pull in webpki-root-certs.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+]
+
 [advisories]
 version = 2
 

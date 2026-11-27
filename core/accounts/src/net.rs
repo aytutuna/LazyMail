@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::TokioResolver;
+use rustls::ClientConfig;
+use rustls_platform_verifier::BuilderVerifierExt;
 
 use crate::autoconfig::{Network, SrvRecord};
 
@@ -18,6 +20,9 @@ impl SystemNetwork {
     pub fn new() -> SystemNetwork {
         SystemNetwork {
             http: reqwest::Client::builder()
+                // The system's verifier, since phones have no root files to load.
+                // Android needs rustls_platform_verifier's init from the native layer first.
+                .use_preconfigured_tls(tls_config())
                 .timeout(TIMEOUT)
                 .https_only(true)
                 .build()
@@ -27,6 +32,15 @@ impl SystemNetwork {
                 .and_then(|b| b.build().ok()),
         }
     }
+}
+
+fn tls_config() -> ClientConfig {
+    ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+        .with_safe_default_protocol_versions()
+        .expect("tls versions")
+        .with_platform_verifier()
+        .expect("platform verifier")
+        .with_no_client_auth()
 }
 
 impl Default for SystemNetwork {
@@ -75,5 +89,15 @@ impl Network for SystemNetwork {
                 _ => None,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn client_builds_with_the_platform_verifier() {
+        let _ = SystemNetwork::new();
     }
 }
