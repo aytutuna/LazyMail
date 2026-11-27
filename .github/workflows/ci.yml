@@ -27,6 +27,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   core-servers:
+    # dovecot.conf.in is the 2.3 format; 24.04 still ships 2.3
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
