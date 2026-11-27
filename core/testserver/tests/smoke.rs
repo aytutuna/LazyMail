@@ -22,7 +22,8 @@ impl Conn {
 
     fn line(&mut self) -> String {
         let mut s = String::new();
-        self.reader.read_line(&mut s).unwrap();
+        let n = self.reader.read_line(&mut s).unwrap();
+        assert!(n > 0, "server closed the connection");
         s.trim_end().to_string()
     }
 
@@ -44,6 +45,19 @@ impl Conn {
             }
         }
     }
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let n = chunk.iter().fold(0u32, |a, b| a << 8 | *b as u32) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+        out.extend(std::iter::repeat_n('=', 3 - chunk.len()));
+    }
+    out
 }
 
 fn var(name: &str) -> Option<String> {
@@ -99,7 +113,13 @@ fn imap_login_append_fetch() {
         .read_to_string(&mut body)
         .unwrap();
     assert_eq!(body, msg);
-    while !c.line().starts_with("a6 OK") {}
+    loop {
+        let l = c.line();
+        assert!(!l.starts_with("a6 NO") && !l.starts_with("a6 BAD"), "{l}");
+        if l.starts_with("a6 OK") {
+            break;
+        }
+    }
 
     let r = c
         .imap("a7", "LIST \"\" \"*\" RETURN (SPECIAL-USE)")
@@ -136,6 +156,9 @@ fn smtp_send_lands_in_the_sink() {
         text.contains("Subject: sink smoke")
             && text.contains("X-Sink-To: <bob@example.test>")
             && text.contains("X-Sink-Auth: yes")
+            && text.contains("
+hello sink
+")
     });
     assert!(found);
 }
