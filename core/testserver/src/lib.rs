@@ -29,6 +29,8 @@ impl Transcript {
                 steps.push(Step::Client(String::new()));
             } else if let Some(rest) = line.strip_prefix("C: ") {
                 steps.push(Step::Client(rest.to_string()));
+            } else if line == "S:" {
+                steps.push(Step::Server(String::new()));
             } else if let Some(rest) = line.strip_prefix("S: ") {
                 steps.push(Step::Server(rest.to_string()));
             } else {

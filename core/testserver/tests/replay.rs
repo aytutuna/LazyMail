@@ -32,7 +32,7 @@ fn drive(t: &Transcript) -> Result<(), String> {
                     break;
                 }
                 let want = line.replace("<tag>", &format!("a{n}"));
-                assert_eq!(got.trim_end(), want);
+                assert_eq!(got.trim_end_matches(['\r', '\n']), want);
             }
         }
     }
