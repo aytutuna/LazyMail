@@ -39,18 +39,16 @@ pub fn html_text(html: &str) -> String {
         if rest.starts_with('<') {
             let end = rest.find('>').map_or(rest.len(), |e| e + 1);
             let closing = rest[1..].starts_with('/');
-            let tag = rest[1..end].trim_start_matches('/').to_ascii_lowercase();
+            let tag = rest[1..end].trim_start_matches('/');
             rest = &rest[end..];
             for skip in ["style", "script"] {
-                if !closing && tag.starts_with(skip) {
-                    let lower = rest.to_ascii_lowercase();
-                    let close = lower.find(&format!("</{skip}")).unwrap_or(rest.len());
-                    rest = &rest[close..];
+                if !closing && starts_with_ignore_case(tag, skip) {
+                    rest = &rest[find_closing(rest, skip)..];
                 }
             }
             out.push(' ');
         } else {
-            match rest.find(';').filter(|&e| e <= 10) {
+            match rest.bytes().take(11).position(|b| b == b';') {
                 Some(e) => match entity(&rest[1..e]) {
                     Some(c) => {
                         out.push(c);
@@ -70,6 +68,19 @@ pub fn html_text(html: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
+    s.len() >= prefix.len() && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// Offset of the `</name` that ends a style or script block, or the end of the text.
+fn find_closing(rest: &str, name: &str) -> usize {
+    let pat = format!("</{name}");
+    rest.as_bytes()
+        .windows(pat.len())
+        .position(|w| w.eq_ignore_ascii_case(pat.as_bytes()))
+        .unwrap_or(rest.len())
 }
 
 fn entity(name: &str) -> Option<char> {
@@ -104,6 +115,15 @@ mod tests {
             t.split_whitespace().collect::<Vec<_>>().join(" "),
             "Fish & chips €5 a < b &bogus; c"
         );
+    }
+
+    #[test]
+    fn hostile_html_is_linear() {
+        let start = std::time::Instant::now();
+        html_text(&"& ".repeat(2_000_000));
+        html_text(&"<style></style>".repeat(300_000));
+        html_text(&"<style>".repeat(300_000));
+        assert!(start.elapsed().as_secs() < 5);
     }
 
     #[test]
