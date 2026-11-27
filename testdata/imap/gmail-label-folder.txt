@@ -1,0 +1,19 @@
+# Written from Google's public IMAP extension documentation, not recorded from a real account.
+# The same message shows up in a label folder with its own UID and the same X-GM-MSGID.
+S: * OK Gimap ready for requests from 192.0.2.1 x2
+C: <tag> LOGIN "user@gmail.example" "app password"
+S: <tag> OK user@gmail.example authenticated (Success)
+C: <tag> SELECT "Receipts"
+S: * 1 EXISTS
+S: * OK [UIDVALIDITY 9] UIDs valid.
+S: * OK [UIDNEXT 2] Predicted next UID.
+S: <tag> OK [READ-WRITE] Receipts selected. (Success)
+C: <tag> UID FETCH 1 (X-GM-MSGID X-GM-LABELS)
+S: * 1 FETCH (X-GM-MSGID 1750000000000000011 X-GM-LABELS ("\\Inbox" Receipts) UID 1)
+S: <tag> OK Success
+C: <tag> UID STORE 1 +X-GM-LABELS (Paid)
+S: * 1 FETCH (X-GM-LABELS ("\\Inbox" Receipts Paid) UID 1)
+S: <tag> OK Success
+C: <tag> LOGOUT
+S: * BYE LOGOUT Requested
+S: <tag> OK 73 good day (Success)

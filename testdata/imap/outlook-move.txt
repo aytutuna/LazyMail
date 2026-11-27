@@ -1,0 +1,20 @@
+# Written from Microsoft's public notes on IMAP for Outlook.com, not recorded from a real account.
+# No MOVE and no CONDSTORE: a client has to COPY, flag \Deleted and EXPUNGE, and rescan flags by UID.
+S: * OK The Microsoft Exchange IMAP4 service is ready.
+C: <tag> LOGIN "user@outlook.example" "app password"
+S: <tag> OK LOGIN completed.
+C: <tag> SELECT INBOX
+S: * 3 EXISTS
+S: * 0 RECENT
+S: * OK [UNSEEN 1] Message 1 is first unseen
+S: * OK [UIDVALIDITY 14] UIDVALIDITY value
+S: * OK [UIDNEXT 40] The next unique identifier value
+S: * FLAGS (\Seen \Answered \Flagged \Deleted \Draft $MDNSent)
+S: <tag> OK [READ-WRITE] SELECT completed.
+C: <tag> UID COPY 38 Archive
+S: <tag> OK [COPYUID 22 38 7] COPY completed.
+C: <tag> UID STORE 38 +FLAGS.SILENT (\Deleted)
+S: <tag> OK STORE completed.
+C: <tag> UID EXPUNGE 38
+S: * 3 EXPUNGE
+S: <tag> OK UID EXPUNGE completed.

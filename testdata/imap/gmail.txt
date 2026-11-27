@@ -1,0 +1,34 @@
+# Written from Google's public IMAP extension documentation, not recorded from a real account.
+S: * OK Gimap ready for requests from 192.0.2.1 x1
+C: <tag> CAPABILITY
+S: * CAPABILITY IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 UIDPLUS COMPRESS=DEFLATE ENABLE MOVE CONDSTORE ESEARCH UTF8=ACCEPT LIST-EXTENDED LIST-STATUS LITERAL- SPECIAL-USE APPENDLIMIT=35651584
+S: <tag> OK Thats all she wrote!
+C: <tag> LOGIN "user@gmail.example" "app password"
+S: * CAPABILITY IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 UIDPLUS COMPRESS=DEFLATE ENABLE MOVE CONDSTORE ESEARCH UTF8=ACCEPT LIST-EXTENDED LIST-STATUS LITERAL- SPECIAL-USE APPENDLIMIT=35651584
+S: <tag> OK user@gmail.example authenticated (Success)
+C: <tag> LIST "" "*"
+S: * LIST (\HasNoChildren) "/" "INBOX"
+S: * LIST (\HasNoChildren \Important) "/" "[Gmail]/Important"
+S: * LIST (\HasNoChildren \Sent) "/" "[Gmail]/Sent Mail"
+S: * LIST (\HasNoChildren \Drafts) "/" "[Gmail]/Drafts"
+S: * LIST (\HasNoChildren \Trash) "/" "[Gmail]/Trash"
+S: * LIST (\HasNoChildren \Junk) "/" "[Gmail]/Spam"
+S: * LIST (\HasNoChildren) "/" "Receipts"
+S: * LIST (\HasChildren \Noselect) "/" "[Gmail]"
+S: * LIST (\HasNoChildren \All) "/" "[Gmail]/All Mail"
+S: <tag> OK Success
+C: <tag> SELECT "[Gmail]/All Mail"
+S: * FLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing)
+S: * OK [PERMANENTFLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing \*)] Flags permitted.
+S: * OK [UIDVALIDITY 5] UIDs valid.
+S: * 2 EXISTS
+S: * 0 RECENT
+S: * OK [UIDNEXT 3] Predicted next UID.
+S: * OK [HIGHESTMODSEQ 1873] Highest
+S: <tag> OK [READ-WRITE] [Gmail]/All Mail selected. (Success)
+C: <tag> UID FETCH 1:* (X-GM-MSGID X-GM-THRID X-GM-LABELS FLAGS)
+S: * 1 FETCH (X-GM-THRID 1750000000000000001 X-GM-MSGID 1750000000000000011 X-GM-LABELS ("\\Inbox" Receipts) UID 1 FLAGS (\Seen))
+S: * 2 FETCH (X-GM-THRID 1750000000000000001 X-GM-MSGID 1750000000000000012 X-GM-LABELS ("\\Inbox" "\\Important") UID 2 FLAGS ())
+S: <tag> OK Success
+C: <tag> UID FETCH 2 (BODY.PEEK[])
+S: * BYE [ALERT] Account exceeded command or bandwidth limits. (Failure)
