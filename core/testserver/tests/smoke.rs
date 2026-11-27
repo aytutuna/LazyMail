@@ -138,8 +138,10 @@ fn smtp_send_lands_in_the_sink() {
     assert!(c.line().starts_with("220"));
     c.send("EHLO test");
     while c.line().starts_with("250-") {}
-    // "\0alice\0alice-pass"
-    c.send("AUTH PLAIN AGFsaWNlAGFsaWNlLXBhc3M=");
+    let user = var("LAZYMAIL_TEST_USER").unwrap();
+    let pass = var("LAZYMAIL_TEST_PASS").unwrap();
+    let blob = base64(format!("\0{user}\0{pass}").as_bytes());
+    c.send(&format!("AUTH PLAIN {blob}"));
     assert!(c.line().starts_with("235"));
     c.send("MAIL FROM:<alice@example.test>");
     assert!(c.line().starts_with("250"));
@@ -156,11 +158,7 @@ fn smtp_send_lands_in_the_sink() {
         text.contains("Subject: sink smoke")
             && text.contains("X-Sink-To: <bob@example.test>")
             && text.contains("X-Sink-Auth: yes")
-            && text.contains(
-                "
-hello sink
-",
-            )
+            && text.contains("\r\nhello sink\r\n")
     });
     assert!(found);
 }
