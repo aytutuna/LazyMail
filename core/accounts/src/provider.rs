@@ -70,8 +70,7 @@ impl Provider {
             Provider::Gmail
         } else if is(&["icloud.com", "me.com", "mac.com"]) {
             Provider::ICloud
-        } else if stem == "yahoo" && is_country_ending(rest) || is(&["ymail.com", "rocketmail.com"])
-        {
+        } else if is(YAHOO) {
             Provider::Yahoo
         } else if is(&["aol.com"]) {
             Provider::Aol
@@ -157,6 +156,42 @@ impl Provider {
         matches!(self, Provider::Outlook | Provider::Microsoft365)
     }
 }
+
+// Yahoo Japan is a different company with its own servers, so it is not here.
+const YAHOO: &[&str] = &[
+    "yahoo.com",
+    "yahoo.co.uk",
+    "yahoo.ca",
+    "yahoo.com.au",
+    "yahoo.co.nz",
+    "yahoo.co.in",
+    "yahoo.in",
+    "yahoo.co.id",
+    "yahoo.com.sg",
+    "yahoo.com.ph",
+    "yahoo.com.hk",
+    "yahoo.com.tw",
+    "yahoo.com.vn",
+    "yahoo.com.my",
+    "yahoo.co.za",
+    "yahoo.com.br",
+    "yahoo.com.mx",
+    "yahoo.com.ar",
+    "yahoo.de",
+    "yahoo.fr",
+    "yahoo.es",
+    "yahoo.it",
+    "yahoo.ie",
+    "yahoo.nl",
+    "yahoo.se",
+    "yahoo.no",
+    "yahoo.dk",
+    "yahoo.pl",
+    "yahoo.gr",
+    "yahoo.com.tr",
+    "ymail.com",
+    "rocketmail.com",
+];
 
 pub(crate) fn domain_of(address: &str) -> String {
     address
