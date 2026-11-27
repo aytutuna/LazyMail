@@ -687,6 +687,8 @@ fn prune_bodies_keeps_headers_and_subject_search() {
     assert_eq!(store.search(&q("old subject")).unwrap().len(), 1);
 }
 
+/// Desktop budget. The plan allows 300 ms on phones, which are several times slower, so run
+/// this test on a device before trusting that number.
 /// cargo test --release -p lazymail-store -- --ignored --nocapture
 #[test]
 #[ignore]
@@ -719,11 +721,26 @@ fn search_100k_under_200_ms() {
         vocab[idx].clone()
     };
 
+    let han: Vec<char> = (0x4E00u32..0x4E00 + 60)
+        .map(|c| char::from_u32(c).unwrap())
+        .collect();
+    let thai: Vec<char> = (0x0E01u32..0x0E01 + 40)
+        .map(|c| char::from_u32(c).unwrap())
+        .collect();
+
     let start = Instant::now();
     store
         .atomic(|s| {
             for i in 0..100_000i64 {
-                let body: Vec<String> = (0..60).map(|_| word(&mut next)).collect();
+                let mut body: Vec<String> = (0..60).map(|_| word(&mut next)).collect();
+                if i % 10 == 0 {
+                    let pool = if i % 20 == 0 { &han } else { &thai };
+                    body.push(
+                        (0..80)
+                            .map(|_| pool[(next() as usize) % pool.len()])
+                            .collect(),
+                    );
+                }
                 let m = NewMessage {
                     folder_id: if i % 5 == 0 { archive.id } else { inbox.id },
                     uid: Some(i as u32 + 1),
@@ -819,6 +836,41 @@ fn search_100k_under_200_ms() {
             },
         ),
         (
+            "two-character CJK",
+            SearchQuery {
+                limit: 50,
+                ..q(&han[3..5].iter().collect::<String>())
+            },
+        ),
+        (
+            "three-character CJK",
+            SearchQuery {
+                limit: 50,
+                ..q(&han[3..6].iter().collect::<String>())
+            },
+        ),
+        (
+            "two-character Thai",
+            SearchQuery {
+                limit: 50,
+                ..q(&thai[3..5].iter().collect::<String>())
+            },
+        ),
+        (
+            "three-character Thai",
+            SearchQuery {
+                limit: 50,
+                ..q(&thai[3..6].iter().collect::<String>())
+            },
+        ),
+        (
+            "one-character CJK",
+            SearchQuery {
+                limit: 50,
+                ..q(&han[3..4].iter().collect::<String>())
+            },
+        ),
+        (
             "word + from",
             SearchQuery {
                 from: Some("user42@".into()),
@@ -843,4 +895,231 @@ fn search_100k_under_200_ms() {
     }
     println!("worst {worst:?}");
     assert!(worst.as_millis() < 200, "slowest search took {worst:?}");
+}
+
+fn attachment_msg(folder: i64, subject: &str, uid: u32) -> NewMessage {
+    let mut m = msg(folder, subject, "b", 1);
+    m.uid = Some(uid);
+    m.attachments = vec![NewAttachment {
+        filename: "a.bin".into(),
+        mime: "application/octet-stream".into(),
+        size: 3,
+        part: "2".into(),
+        content_id: None,
+    }];
+    m
+}
+
+fn blob_count(dir: &TempDir) -> usize {
+    std::fs::read_dir(dir.path().join("attachments"))
+        .unwrap()
+        .count()
+}
+
+#[test]
+fn files_survive_a_rolled_back_delete() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    let id = store.insert_message(&attachment_msg(f.id, "s", 1)).unwrap();
+    let att = store.message(id).unwrap().unwrap().attachments[0].id;
+    store.put_attachment_data(att, b"abc").unwrap();
+
+    let r: Result<()> = store.atomic(|s| {
+        s.delete_message(id)?;
+        s.insert_message(&attachment_msg(f.id, "moved", 1))?;
+        s.insert_message(&attachment_msg(f.id, "dup", 1))?;
+        Ok(())
+    });
+    assert!(r.is_err());
+    assert_eq!(store.attachment_data(att).unwrap().unwrap(), b"abc");
+    assert_eq!(blob_count(&dir), 1);
+
+    store.atomic(|s| s.delete_message(id)).unwrap();
+    assert_eq!(blob_count(&dir), 0);
+}
+
+#[test]
+fn a_missing_attachment_file_reads_as_not_downloaded() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    let id = store.insert_message(&attachment_msg(f.id, "s", 1)).unwrap();
+    let att = store.message(id).unwrap().unwrap().attachments[0].id;
+    store.put_attachment_data(att, b"abc").unwrap();
+    for e in std::fs::read_dir(dir.path().join("attachments")).unwrap() {
+        std::fs::remove_file(e.unwrap().path()).unwrap();
+    }
+    assert_eq!(store.attachment_data(att).unwrap(), None);
+    assert!(!store.message(id).unwrap().unwrap().attachments[0].stored);
+}
+
+#[test]
+fn stray_attachment_files_are_swept_on_open() {
+    let dir = TempDir::new().unwrap();
+    let (store, key, wrapper) = open(&dir);
+    assert!(store.put_attachment_data(99, b"x").is_err());
+    assert_eq!(blob_count(&dir), 0);
+    drop(store);
+    std::fs::write(dir.path().join("attachments").join("leftover"), b"x").unwrap();
+    Store::open(dir.path(), &key, wrapper).unwrap();
+    assert_eq!(blob_count(&dir), 0);
+}
+
+#[test]
+fn moving_keeps_the_row_attachments_and_thread() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let inbox = store.upsert_folder("INBOX", None).unwrap();
+    let trash = store.upsert_folder("Trash", None).unwrap();
+    let id = store
+        .insert_message(&attachment_msg(inbox.id, "s", 7))
+        .unwrap();
+    let att = store.message(id).unwrap().unwrap().attachments[0].id;
+    store.put_attachment_data(att, b"abc").unwrap();
+    let thread = store.message(id).unwrap().unwrap().thread_id;
+
+    store.move_message(id, trash.id, Some(3)).unwrap();
+    let m = store.message(id).unwrap().unwrap();
+    assert_eq!(
+        (m.folder_id, m.uid, m.thread_id),
+        (trash.id, Some(3), thread)
+    );
+    assert_eq!(store.find_by_uid(inbox.id, 7).unwrap(), None);
+    assert_eq!(store.find_by_uid(trash.id, 3).unwrap(), Some(id));
+    assert_eq!(store.attachment_data(att).unwrap().unwrap(), b"abc");
+
+    store.set_ids(id, Some(9), Some("AAMk")).unwrap();
+    assert_eq!(store.find_by_graph_id("AAMk").unwrap(), Some(id));
+    assert!(store.move_message(999, trash.id, None).is_err());
+}
+
+#[test]
+fn a_gmail_message_with_two_labels_is_found_once_per_label() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let all = store.upsert_folder("[Gmail]/All Mail", None).unwrap();
+    let mut m = msg(all.id, "Quarterly plan", "numbers", 5);
+    m.gm_msgid = Some(1111);
+    m.labels = vec!["\\Inbox".into(), "Work".into()];
+    let id = store.insert_message(&m).unwrap();
+    let mut other = msg(all.id, "Quarterly lunch", "food", 6);
+    other.gm_msgid = Some(2222);
+    other.labels = vec!["Home".into()];
+    store.insert_message(&other).unwrap();
+    assert!(store.insert_message(&m).is_err());
+    assert_eq!(store.find_by_gm_msgid(1111).unwrap(), Some(id));
+
+    let ids = |label: Option<&str>| -> Vec<i64> {
+        store
+            .search(&SearchQuery {
+                label: label.map(str::to_string),
+                ..q("quarterly")
+            })
+            .unwrap()
+            .iter()
+            .map(|h| h.message_id)
+            .collect()
+    };
+    assert_eq!(ids(Some("Work")), vec![id]);
+    assert_eq!(ids(Some("\\Inbox")), vec![id]);
+    assert_eq!(ids(Some("Home")).len(), 1);
+    assert_eq!(ids(None).len(), 2);
+}
+
+#[test]
+fn replies_to_a_missing_root_share_a_thread() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    let reply = |mid: &str, date: i64| {
+        let mut m = msg(f.id, "Re: plan", "b", date);
+        m.message_id = Some(mid.into());
+        m.references = vec!["<root@x>".into()];
+        m
+    };
+    let a = store.insert_message(&reply("<a@x>", 1)).unwrap();
+    let b = store.insert_message(&reply("<b@x>", 2)).unwrap();
+    let unrelated = store.insert_message(&msg(f.id, "other", "b", 3)).unwrap();
+    let t = |id| store.message(id).unwrap().unwrap().thread_id;
+    assert_eq!(t(a), t(b));
+    assert_ne!(t(a), t(unrelated));
+    let m = store.message(a).unwrap().unwrap();
+    assert_eq!(m.references, vec!["<root@x>".to_string()]);
+}
+
+#[test]
+fn html_only_mail_is_searchable_and_previewed() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    let mut m = msg(f.id, "News", "", 1);
+    m.body_text = None;
+    m.body_html =
+        Some("<style>p{color:red}</style><p>Fresh &amp; <b>zebrafish</b> arrivals</p>".into());
+    let a = store.insert_message(&m).unwrap();
+    let hits = store.search(&q("zebrafish")).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].message_id, a);
+    assert!(!hits[0].snippet.contains("color"));
+    assert!(store.search(&q("color")).unwrap().is_empty());
+
+    let b = store.insert_message(&msg(f.id, "Later", "x", 2)).unwrap();
+    store
+        .set_bodies(b, None, Some("<div>quokka pastures</div>"))
+        .unwrap();
+    assert_eq!(store.search(&q("quokka")).unwrap().len(), 1);
+    assert_eq!(
+        store.message(b).unwrap().unwrap().preview,
+        "quokka pastures"
+    );
+}
+
+#[test]
+fn control_characters_in_a_query_are_ignored() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    store
+        .insert_message(&msg(f.id, "hello", "world", 1))
+        .unwrap();
+    assert_eq!(store.search(&q("hel\0lo")).unwrap().len(), 1);
+    assert_eq!(store.search(&q("hello\0")).unwrap().len(), 1);
+    assert_eq!(store.search(&q("\0")).unwrap().len(), 1);
+}
+
+#[test]
+fn inline_images_do_not_count_as_attachments() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let f = store.upsert_folder("INBOX", None).unwrap();
+    let mut m = msg(f.id, "s", "b", 1);
+    m.attachments = vec![NewAttachment {
+        filename: "logo.png".into(),
+        mime: "image/png".into(),
+        size: 1,
+        part: "2".into(),
+        content_id: Some("<logo@x>".into()),
+    }];
+    let id = store.insert_message(&m).unwrap();
+    assert!(!store.message(id).unwrap().unwrap().has_attachments);
+}
+
+#[test]
+fn wrapped_data_is_bound_to_its_name() {
+    let w = TestWrapper::new();
+    let blob = w.wrap(b"a", b"one").unwrap();
+    assert_eq!(w.unwrap(b"a", &blob).unwrap(), b"one");
+    assert!(w.unwrap(b"b", &blob).is_err());
+}
+
+#[test]
+fn only_a_queued_item_starts_sending() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let a = store.outbox_enqueue("<m@x>", b"raw", 1).unwrap();
+    store.outbox_begin_send(a).unwrap();
+    assert!(store.outbox_begin_send(a).is_err());
+    store.outbox_mark_sent(a).unwrap();
+    assert!(store.outbox_begin_send(a).is_err());
 }

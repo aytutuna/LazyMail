@@ -1,5 +1,6 @@
 use rusqlite::{params, OptionalExtension};
 
+use crate::cjk::{bigrams, has_cjk, html_text};
 use crate::{Error, Result, Store};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -41,6 +42,9 @@ pub struct NewAttachment {
     pub part: String,
 }
 
+/// Gmail is stored once, as it appears in All Mail: one row per `gm_msgid`, with the mailbox
+/// labels in `labels` (searchable through `SearchQuery::label`). Other IMAP servers and Graph
+/// store one row per folder and message.
 #[derive(Debug, Clone, Default)]
 pub struct NewMessage {
     pub folder_id: i64,
@@ -49,6 +53,7 @@ pub struct NewMessage {
     pub graph_id: Option<String>,
     pub message_id: Option<String>,
     pub in_reply_to: Option<String>,
+    /// Ids from the References header; `in_reply_to` is added when missing.
     pub references: Vec<String>,
     pub subject: String,
     pub from_name: String,
@@ -61,6 +66,7 @@ pub struct NewMessage {
     pub flags: Flags,
     pub labels: Vec<String>,
     pub headers: Option<String>,
+    /// The text part. When the message has only HTML, the search text is taken from it.
     pub body_text: Option<String>,
     pub body_html: Option<String>,
     pub attachments: Vec<NewAttachment>,
@@ -87,6 +93,9 @@ pub struct Message {
     pub gm_msgid: Option<i64>,
     pub graph_id: Option<String>,
     pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    /// In_reply_to first, then the References header's ids.
+    pub references: Vec<String>,
     pub subject: String,
     pub from_name: String,
     pub from_addr: String,
@@ -95,8 +104,10 @@ pub struct Message {
     pub date: i64,
     pub size: u32,
     pub flags: Flags,
+    /// True when a part other than an inline image is listed.
     pub has_attachments: bool,
     pub headers: Option<String>,
+    /// The text part, or text taken from the HTML when there was none.
     pub body_text: Option<String>,
     pub body_html: Option<String>,
     pub preview: String,
@@ -119,17 +130,34 @@ fn preview(body: Option<&str>) -> String {
     out.chars().take(200).collect()
 }
 
+/// The text that is indexed and previewed.
+fn search_text(text: Option<&str>, html: Option<&str>) -> Option<String> {
+    match (text, html) {
+        (Some(t), _) if !t.trim().is_empty() => Some(t.to_string()),
+        (_, Some(h)) => Some(html_text(h)),
+        (t, None) => t.map(str::to_string),
+    }
+}
+
 impl Store {
     pub fn insert_message(&self, m: &NewMessage) -> Result<i64> {
         self.atomic(|s| {
-            let thread = s.thread_for(m)?;
+            let mut refs: Vec<&String> = Vec::new();
+            for r in m.in_reply_to.iter().chain(&m.references) {
+                if !refs.contains(&r) {
+                    refs.push(r);
+                }
+            }
+            let thread = s.thread_for(m, &refs)?;
             let from_text = format!("{} {}", m.from_name, m.from_addr);
+            let text = search_text(m.body_text.as_deref(), m.body_html.as_deref());
+            let cjk = has_cjk(&[&m.subject, &from_text, text.as_deref().unwrap_or("")]);
             s.conn.execute(
                 "INSERT INTO messages(folder_id, uid, gm_msgid, graph_id, message_id, in_reply_to,
                      thread_id, subject, from_name, from_addr, from_text, to_text, cc_text, date,
-                     size, flags, has_attachments, headers, body_text, body_html, preview)
+                     size, flags, has_attachments, headers, body_text, body_html, preview, cjk)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20, ?21)",
+                     ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     m.folder_id,
                     m.uid,
@@ -147,18 +175,20 @@ impl Store {
                     m.date,
                     m.size,
                     m.flags.bits(),
-                    !m.attachments.is_empty(),
+                    m.attachments.iter().any(|a| a.content_id.is_none()),
                     m.headers,
-                    m.body_text,
+                    text,
                     m.body_html,
-                    preview(m.body_text.as_deref()),
+                    preview(text.as_deref()),
+                    cjk,
                 ],
             )?;
             let id = s.conn.last_insert_rowid();
+            let refs_list = refs;
             let mut refs = s
                 .conn
                 .prepare_cached("INSERT INTO message_refs(message_id, ref) VALUES (?1, ?2)")?;
-            for r in m.in_reply_to.iter().chain(&m.references) {
+            for r in &refs_list {
                 refs.execute(params![id, r])?;
             }
             let mut lab = s.conn.prepare_cached(
@@ -181,27 +211,45 @@ impl Store {
                     a.part
                 ])?;
             }
+            s.put_grams(id, &[&m.subject, &from_text, text.as_deref().unwrap_or("")])?;
             Ok(id)
         })
     }
 
-    /// Joins the threads of everything this message points to and everything pointing at it.
-    fn thread_for(&self, m: &NewMessage) -> Result<i64> {
+    fn put_grams(&self, id: i64, texts: &[&str]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM cjk_grams WHERE message_id = ?1", [id])?;
+        let mut put = self
+            .conn
+            .prepare_cached("INSERT INTO cjk_grams(gram, message_id) VALUES (?1, ?2)")?;
+        for g in bigrams(texts) {
+            put.execute(params![g, id])?;
+        }
+        Ok(())
+    }
+
+    /// Joins the threads of everything this message points to, everything pointing at it and
+    /// everything that points at the same ids, so replies to a message that is not stored
+    /// (deleted, in an unsynced folder, out of the window) still meet.
+    fn thread_for(&self, m: &NewMessage, refs: &[&String]) -> Result<i64> {
         let mut found: Vec<i64> = Vec::new();
         let mut parent = self
             .conn
             .prepare_cached("SELECT DISTINCT thread_id FROM messages WHERE message_id = ?1")?;
-        for r in m.in_reply_to.iter().chain(&m.references) {
+        let mut siblings = self.conn.prepare_cached(
+            "SELECT DISTINCT m.thread_id FROM message_refs r JOIN messages m ON m.id = r.message_id
+             WHERE r.ref = ?1",
+        )?;
+        for r in refs {
             for t in parent.query_map([r], |r| r.get(0))? {
+                found.push(t?);
+            }
+            for t in siblings.query_map([r], |r| r.get(0))? {
                 found.push(t?);
             }
         }
         if let Some(mid) = &m.message_id {
-            let mut kids = self.conn.prepare_cached(
-                "SELECT DISTINCT m.thread_id FROM message_refs r JOIN messages m ON m.id = r.message_id
-                 WHERE r.ref = ?1",
-            )?;
-            for t in kids.query_map([mid], |r| r.get(0))? {
+            for t in siblings.query_map([mid], |r| r.get(0))? {
                 found.push(t?);
             }
         }
@@ -227,7 +275,7 @@ impl Store {
         let row = self
             .conn
             .query_row(
-                "SELECT id, folder_id, thread_id, uid, gm_msgid, graph_id, message_id, subject,
+                "SELECT id, folder_id, thread_id, uid, gm_msgid, graph_id, message_id, in_reply_to, subject,
                      from_name, from_addr, to_text, cc_text, date, size, flags, has_attachments,
                      headers, body_text, body_html, preview
                  FROM messages WHERE id = ?1",
@@ -241,19 +289,21 @@ impl Store {
                         gm_msgid: r.get(4)?,
                         graph_id: r.get(5)?,
                         message_id: r.get(6)?,
-                        subject: r.get(7)?,
-                        from_name: r.get(8)?,
-                        from_addr: r.get(9)?,
-                        to: r.get(10)?,
-                        cc: r.get(11)?,
-                        date: r.get(12)?,
-                        size: r.get(13)?,
-                        flags: Flags::from_bits(r.get(14)?),
-                        has_attachments: r.get(15)?,
-                        headers: r.get(16)?,
-                        body_text: r.get(17)?,
-                        body_html: r.get(18)?,
-                        preview: r.get(19)?,
+                        in_reply_to: r.get(7)?,
+                        references: Vec::new(),
+                        subject: r.get(8)?,
+                        from_name: r.get(9)?,
+                        from_addr: r.get(10)?,
+                        to: r.get(11)?,
+                        cc: r.get(12)?,
+                        date: r.get(13)?,
+                        size: r.get(14)?,
+                        flags: Flags::from_bits(r.get(15)?),
+                        has_attachments: r.get(16)?,
+                        headers: r.get(17)?,
+                        body_text: r.get(18)?,
+                        body_html: r.get(19)?,
+                        preview: r.get(20)?,
                         labels: Vec::new(),
                         attachments: Vec::new(),
                     })
@@ -261,6 +311,11 @@ impl Store {
             )
             .optional()?;
         let Some(mut m) = row else { return Ok(None) };
+        m.references = self
+            .conn
+            .prepare("SELECT ref FROM message_refs WHERE message_id = ?1 ORDER BY rowid")?
+            .query_map([id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         m.labels = self
             .conn
             .prepare("SELECT label FROM labels WHERE message_id = ?1 ORDER BY label")?
@@ -293,6 +348,17 @@ impl Store {
             .query_row(
                 "SELECT id FROM messages WHERE folder_id = ?1 AND uid = ?2",
                 params![folder_id, uid],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn find_by_gm_msgid(&self, gm_msgid: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM messages WHERE gm_msgid = ?1",
+                [gm_msgid],
                 |r| r.get(0),
             )
             .optional()?)
@@ -346,9 +412,54 @@ impl Store {
     }
 
     pub fn set_bodies(&self, id: i64, text: Option<&str>, html: Option<&str>) -> Result<()> {
+        self.write_bodies(id, text, html, false)
+    }
+
+    fn write_bodies(
+        &self,
+        id: i64,
+        text: Option<&str>,
+        html: Option<&str>,
+        keep_preview: bool,
+    ) -> Result<()> {
+        self.atomic(|s| {
+            let (subject, from_text): (String, String) = s
+                .conn
+                .query_row(
+                    "SELECT subject, from_text FROM messages WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or(Error::NotFound)?;
+            let text = search_text(text, html);
+            let all = [&subject, &from_text, text.as_deref().unwrap_or("")];
+            s.conn.execute(
+                "UPDATE messages SET body_text = ?2, body_html = ?3, preview = CASE WHEN ?6 THEN preview ELSE ?4 END, cjk = ?5 WHERE id = ?1",
+                params![id, text, html, preview(text.as_deref()), has_cjk(&all), keep_preview],
+            )?;
+            s.put_grams(id, &all)
+        })
+    }
+
+    /// Moves a message to another folder, keeping its row, attachments and thread. `uid` is the
+    /// one the server gave it there (COPYUID); Graph moves keep their id and pass None.
+    pub fn move_message(&self, id: i64, folder_id: i64, uid: Option<u32>) -> Result<()> {
         let n = self.conn.execute(
-            "UPDATE messages SET body_text = ?2, body_html = ?3, preview = ?4 WHERE id = ?1",
-            params![id, text, html, preview(text)],
+            "UPDATE messages SET folder_id = ?2, uid = ?3 WHERE id = ?1",
+            params![id, folder_id, uid],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Records the ids the server gave a message after the fact, such as the UID from APPENDUID.
+    pub fn set_ids(&self, id: i64, uid: Option<u32>, graph_id: Option<&str>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE messages SET uid = ?2, graph_id = ?3 WHERE id = ?1",
+            params![id, uid, graph_id],
         )?;
         if n == 0 {
             return Err(Error::NotFound);
@@ -398,8 +509,7 @@ impl Store {
                 .collect::<rusqlite::Result<_>>()?;
             for &id in &ids {
                 s.evict_message_attachments(id)?;
-                s.conn
-                    .execute("UPDATE messages SET body_text = NULL, body_html = NULL WHERE id = ?1", [id])?;
+                s.write_bodies(id, None, None, true)?;
             }
             Ok(ids.len())
         })

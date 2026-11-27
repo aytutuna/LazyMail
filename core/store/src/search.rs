@@ -1,6 +1,7 @@
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter};
 
+use crate::cjk::is_cjk_or_thai;
 use crate::messages::Flags;
 use crate::{Result, Store};
 
@@ -15,6 +16,8 @@ pub struct SearchQuery {
     pub to: Option<String>,
     pub subject: Option<String>,
     pub folder_id: Option<i64>,
+    /// A Gmail label or other tag on the message.
+    pub label: Option<String>,
     /// Inclusive, unix seconds.
     pub after: Option<i64>,
     /// Exclusive, unix seconds.
@@ -42,12 +45,6 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-fn is_cjk_or_thai(c: char) -> bool {
-    matches!(c as u32,
-        0x0E00..=0x0E7F | 0x1100..=0x11FF | 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
-        | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF66..=0xFF9F)
-}
-
 fn like(s: &str) -> String {
     let mut out = String::from("%");
     for c in s.chars() {
@@ -66,30 +63,43 @@ const COMMON: usize = 2000;
 enum Text {
     None,
     Words(String),
-    Trigrams(String),
-    Substrings(Vec<String>),
+    /// Words of three characters or more go to the trigram index, two-character CJK words to
+    /// the bigram table, anything shorter or mixed to a scan.
+    Cjk {
+        trigrams: Option<String>,
+        bigrams: Vec<String>,
+        scan: Vec<String>,
+    },
 }
 
 fn plan(text: &str) -> Text {
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| w.replace('"', ""))
+        .map(|w| {
+            w.chars()
+                .filter(|&c| c != '"' && !c.is_control())
+                .collect::<String>()
+        })
         .filter(|w| !w.is_empty())
         .collect();
     if words.is_empty() {
         return Text::None;
     }
     if text.chars().any(is_cjk_or_thai) {
-        if words.iter().all(|w| w.chars().count() >= 3) {
-            return Text::Trigrams(
-                words
-                    .iter()
-                    .map(|w| format!("\"{w}\""))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
+        let (mut long, mut bigrams, mut scan) = (Vec::new(), Vec::new(), Vec::new());
+        for w in words {
+            match w.chars().count() {
+                0..=1 => scan.push(w),
+                2 if w.chars().all(is_cjk_or_thai) => bigrams.push(w),
+                2 => scan.push(w),
+                _ => long.push(format!("\"{w}\"")),
+            }
         }
-        return Text::Substrings(words);
+        return Text::Cjk {
+            trigrams: (!long.is_empty()).then(|| long.join(" ")),
+            bigrams,
+            scan,
+        };
     }
     let last = words.len() - 1;
     let terms: Vec<String> = words
@@ -115,9 +125,16 @@ impl Store {
         let (table, matcher) = match plan(&q.text) {
             Text::None => (None, None),
             Text::Words(m) => (Some("msg_fts"), Some(m)),
-            Text::Trigrams(m) => (Some("msg_tri"), Some(m)),
-            Text::Substrings(words) => {
-                for w in words {
+            Text::Cjk {
+                trigrams,
+                bigrams,
+                scan,
+            } => {
+                for g in bigrams {
+                    conds.push("m.id IN (SELECT message_id FROM cjk_grams WHERE gram = ?)".into());
+                    args.push(Value::Text(g));
+                }
+                for w in scan {
                     conds.push(
                         "(m.subject LIKE ? ESCAPE '\\' OR m.from_text LIKE ? ESCAPE '\\' OR m.body_text LIKE ? ESCAPE '\\')"
                             .into(),
@@ -126,7 +143,10 @@ impl Store {
                         args.push(Value::Text(like(&w)));
                     }
                 }
-                (None, None)
+                match trigrams {
+                    Some(t) => (Some("msg_tri"), Some(t)),
+                    None => (None, None),
+                }
             }
         };
         if let (Some(t), Some(m)) = (table, &matcher) {
@@ -164,6 +184,12 @@ impl Store {
         if let Some(f) = q.folder_id {
             conds.push("m.folder_id = ?".into());
             args.push(Value::Integer(f));
+        }
+        if let Some(l) = &q.label {
+            conds.push(
+                "EXISTS (SELECT 1 FROM labels l WHERE l.message_id = m.id AND l.label = ?)".into(),
+            );
+            args.push(Value::Text(l.clone()));
         }
         if let Some(d) = q.after {
             conds.push("m.date >= ?".into());

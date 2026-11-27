@@ -53,11 +53,12 @@ CREATE TABLE messages(
     headers TEXT,
     body_text TEXT,
     body_html TEXT,
-    preview TEXT NOT NULL DEFAULT ''
+    preview TEXT NOT NULL DEFAULT '',
+    cjk INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX messages_uid ON messages(folder_id, uid) WHERE uid IS NOT NULL;
 CREATE UNIQUE INDEX messages_graph ON messages(graph_id) WHERE graph_id IS NOT NULL;
-CREATE INDEX messages_gm ON messages(gm_msgid) WHERE gm_msgid IS NOT NULL;
+CREATE UNIQUE INDEX messages_gm ON messages(gm_msgid) WHERE gm_msgid IS NOT NULL;
 CREATE INDEX messages_mid ON messages(message_id);
 CREATE INDEX messages_thread ON messages(thread_id, date);
 CREATE INDEX messages_date ON messages(date DESC);
@@ -69,6 +70,13 @@ CREATE TABLE message_refs(
 );
 CREATE INDEX message_refs_ref ON message_refs(ref);
 CREATE INDEX message_refs_msg ON message_refs(message_id);
+
+CREATE TABLE cjk_grams(
+    gram TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    PRIMARY KEY(gram, message_id)
+) WITHOUT ROWID;
+CREATE INDEX cjk_grams_msg ON cjk_grams(message_id);
 
 CREATE TABLE labels(
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -137,22 +145,22 @@ CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
     INSERT INTO msg_fts(rowid, subject, from_text, to_text, body_text)
         VALUES (new.id, new.subject, new.from_text, new.to_text, new.body_text);
     INSERT INTO msg_tri(rowid, subject, from_text, body_text)
-        VALUES (new.id, new.subject, new.from_text, new.body_text);
+        SELECT new.id, new.subject, new.from_text, new.body_text WHERE new.cjk = 1;
 END;
 CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
     INSERT INTO msg_fts(msg_fts, rowid, subject, from_text, to_text, body_text)
         VALUES ('delete', old.id, old.subject, old.from_text, old.to_text, old.body_text);
     INSERT INTO msg_tri(msg_tri, rowid, subject, from_text, body_text)
-        VALUES ('delete', old.id, old.subject, old.from_text, old.body_text);
+        SELECT 'delete', old.id, old.subject, old.from_text, old.body_text WHERE old.cjk = 1;
 END;
 CREATE TRIGGER messages_au AFTER UPDATE OF subject, from_text, to_text, body_text ON messages BEGIN
     INSERT INTO msg_fts(msg_fts, rowid, subject, from_text, to_text, body_text)
         VALUES ('delete', old.id, old.subject, old.from_text, old.to_text, old.body_text);
     INSERT INTO msg_tri(msg_tri, rowid, subject, from_text, body_text)
-        VALUES ('delete', old.id, old.subject, old.from_text, old.body_text);
+        SELECT 'delete', old.id, old.subject, old.from_text, old.body_text WHERE old.cjk = 1;
     INSERT INTO msg_fts(rowid, subject, from_text, to_text, body_text)
         VALUES (new.id, new.subject, new.from_text, new.to_text, new.body_text);
     INSERT INTO msg_tri(rowid, subject, from_text, body_text)
-        VALUES (new.id, new.subject, new.from_text, new.body_text);
+        SELECT new.id, new.subject, new.from_text, new.body_text WHERE new.cjk = 1;
 END;
 ";
