@@ -1,0 +1,87 @@
+# Test-only Dovecot, runs as the current user. start.sh fills in the @...@ values.
+protocols = imap
+base_dir = @STATE@/run
+state_dir = @STATE@/run
+libexec_dir = @LIBEXEC@
+mail_plugin_dir = @LIBEXEC@/modules
+login_plugin_dir = @LIBEXEC@/modules/login
+log_path = @STATE@/dovecot.log
+info_log_path = @STATE@/dovecot.log
+default_internal_user = @USER@
+default_internal_group = @GROUP@
+default_login_user = @USER@
+first_valid_uid = @UID@
+last_valid_uid = @UID@
+first_valid_gid = @GID@
+last_valid_gid = @GID@
+
+disable_plaintext_auth = no
+auth_mechanisms = plain login
+ssl = yes
+ssl_cert = <@STATE@/cert.pem
+ssl_key = <@STATE@/key.pem
+ssl_min_protocol = TLSv1.2
+
+mail_location = maildir:@STATE@/mail/%u
+mail_uid = @UID@
+mail_gid = @GID@
+imap_capability = +CONDSTORE QRESYNC
+import_environment = TZ CORE_OUTOFMEM CORE_ERROR LISTEN_PID LISTEN_FDS LD_LIBRARY_PATH
+
+passdb {
+  driver = passwd-file
+  args = scheme=PLAIN username_format=%u @HERE@/users
+}
+userdb {
+  driver = static
+  args = uid=@UID@ gid=@GID@ home=@STATE@/mail/%u
+}
+
+namespace inbox {
+  inbox = yes
+  separator = /
+  mailbox Drafts {
+    special_use = \Drafts
+    auto = subscribe
+  }
+  mailbox Sent {
+    special_use = \Sent
+    auto = subscribe
+  }
+  mailbox Trash {
+    special_use = \Trash
+    auto = subscribe
+  }
+  mailbox Junk {
+    special_use = \Junk
+    auto = subscribe
+  }
+  mailbox Archive {
+    special_use = \Archive
+    auto = subscribe
+  }
+}
+
+service anvil {
+  chroot =
+}
+service imap-login {
+  chroot =
+  inet_listener imap {
+    address = 127.0.0.1
+    port = @IMAP_PORT@
+  }
+  inet_listener imaps {
+    address = 127.0.0.1
+    port = @IMAPS_PORT@
+    ssl = yes
+  }
+}
+service pop3-login {
+  inet_listener pop3 {
+    port = 0
+  }
+  inet_listener pop3s {
+    port = 0
+  }
+}
