@@ -14,6 +14,14 @@ S: * LIST (\HasNoChildren \Trash) "/" "Deleted Messages"
 S: * LIST (\HasNoChildren \Junk) "/" "Junk"
 S: * LIST (\HasNoChildren \Archive) "/" "Archive"
 S: <tag> OK LIST completed.
+C: <tag> SELECT INBOX
+S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+S: * OK [PERMANENTFLAGS (\Answered \Flagged \Deleted \Seen \Draft \*)] Flags permitted.
+S: * 4 EXISTS
+S: * 0 RECENT
+S: * OK [UIDVALIDITY 3] UIDs valid
+S: * OK [UIDNEXT 13] Predicted next UID
+S: <tag> OK [READ-WRITE] SELECT completed.
 C: <tag> UID MOVE 12 Archive
 S: * OK [COPYUID 3 12 5] Copied
 S: * 4 EXPUNGE

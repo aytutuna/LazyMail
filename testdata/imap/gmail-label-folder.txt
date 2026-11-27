@@ -4,6 +4,8 @@ S: * OK Gimap ready for requests from 192.0.2.1 x2
 C: <tag> LOGIN "user@gmail.example" "app password"
 S: <tag> OK user@gmail.example authenticated (Success)
 C: <tag> SELECT "Receipts"
+S: * FLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing)
+S: * OK [PERMANENTFLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing \*)] Flags permitted.
 S: * 1 EXISTS
 S: * OK [UIDVALIDITY 9] UIDs valid.
 S: * OK [UIDNEXT 2] Predicted next UID.

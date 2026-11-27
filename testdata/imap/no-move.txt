@@ -1,6 +1,6 @@
-# Written from Microsoft's public notes on IMAP for Outlook.com, not recorded from a real account.
-# No MOVE and no CONDSTORE: a client has to COPY, flag \Deleted and EXPUNGE, and rescan flags by UID.
-S: * OK The Microsoft Exchange IMAP4 service is ready.
+# Written from RFC 3501 and RFC 4315, not recorded from a real account.
+# A server with no MOVE and no CONDSTORE: a client has to COPY, flag \Deleted and UID EXPUNGE.
+S: * OK IMAP4rev1 server ready.
 C: <tag> LOGIN "user@outlook.example" "app password"
 S: <tag> OK LOGIN completed.
 C: <tag> SELECT INBOX
