@@ -14,6 +14,8 @@ pub struct SyncState {
 pub struct Folder {
     pub id: i64,
     pub name: String,
+    /// The provider's folder id (Graph), when folders are keyed by it instead of by name.
+    pub remote_id: Option<String>,
     /// Special-use role such as "inbox", "sent" or "trash".
     pub role: Option<String>,
     pub sync: SyncState,
@@ -23,30 +25,55 @@ fn folder(r: &Row) -> rusqlite::Result<Folder> {
     Ok(Folder {
         id: r.get(0)?,
         name: r.get(1)?,
-        role: r.get(2)?,
+        remote_id: r.get(2)?,
+        role: r.get(3)?,
         sync: SyncState {
-            uidvalidity: r.get(3)?,
-            uidnext: r.get(4)?,
-            highestmodseq: r.get(5)?,
-            delta_link: r.get(6)?,
+            uidvalidity: r.get(4)?,
+            uidnext: r.get(5)?,
+            highestmodseq: r.get(6)?,
+            delta_link: r.get(7)?,
         },
     })
 }
 
-const COLS: &str = "id, name, role, uidvalidity, uidnext, highestmodseq, delta_link";
+const COLS: &str = "id, name, remote_id, role, uidvalidity, uidnext, highestmodseq, delta_link";
 
 impl Store {
     /// Returns the folder called `name`, creating it if needed. The role is updated when given.
+    /// For IMAP, where `name` is the full path and identifies the folder.
     pub fn upsert_folder(&self, name: &str, role: Option<&str>) -> Result<Folder> {
         self.conn.execute(
             "INSERT INTO folders(name, role) VALUES (?1, ?2)
-             ON CONFLICT(name) DO UPDATE SET role = coalesce(?2, role)",
+             ON CONFLICT(name) WHERE remote_id IS NULL DO UPDATE SET role = coalesce(?2, role)",
             params![name, role],
         )?;
         self.conn
             .query_row(
-                &format!("SELECT {COLS} FROM folders WHERE name = ?1"),
+                &format!("SELECT {COLS} FROM folders WHERE name = ?1 AND remote_id IS NULL"),
                 [name],
+                folder,
+            )
+            .map_err(Into::into)
+    }
+
+    /// Like `upsert_folder`, keyed on the provider's folder id, so a rename keeps the row and
+    /// its sync state and equal names under different parents stay apart.
+    pub fn upsert_remote_folder(
+        &self,
+        remote_id: &str,
+        name: &str,
+        role: Option<&str>,
+    ) -> Result<Folder> {
+        self.conn.execute(
+            "INSERT INTO folders(remote_id, name, role) VALUES (?1, ?2, ?3)
+             ON CONFLICT(remote_id) WHERE remote_id IS NOT NULL
+             DO UPDATE SET name = ?2, role = coalesce(?3, role)",
+            params![remote_id, name, role],
+        )?;
+        self.conn
+            .query_row(
+                &format!("SELECT {COLS} FROM folders WHERE remote_id = ?1"),
+                [remote_id],
                 folder,
             )
             .map_err(Into::into)

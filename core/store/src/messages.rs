@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension};
 
-use crate::cjk::{bigrams, has_cjk, html_text};
+use crate::cjk::{grams, has_cjk, html_text};
 use crate::{Error, Result, Store};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,6 +38,10 @@ pub struct NewAttachment {
     pub mime: String,
     pub size: u32,
     pub content_id: Option<String>,
+    /// Marked inline by the sender (Content-Disposition inline, or Graph's isInline). Only an
+    /// inline image stays out of the "has attachment" count, since Outlook and Apple Mail give
+    /// ordinary files a Content-ID too.
+    pub inline: bool,
     /// MIME part path such as "2.1", or the provider's attachment id.
     pub part: String,
 }
@@ -53,7 +57,8 @@ pub struct NewMessage {
     pub graph_id: Option<String>,
     pub message_id: Option<String>,
     pub in_reply_to: Option<String>,
-    /// Ids from the References header; `in_reply_to` is added when missing.
+    /// Ids from the References header, in header order; `in_reply_to` is added at the end when
+    /// missing.
     pub references: Vec<String>,
     pub subject: String,
     pub from_name: String,
@@ -94,7 +99,7 @@ pub struct Message {
     pub graph_id: Option<String>,
     pub message_id: Option<String>,
     pub in_reply_to: Option<String>,
-    /// In_reply_to first, then the References header's ids.
+    /// The References header's ids in order, then in_reply_to when the header lacked it.
     pub references: Vec<String>,
     pub subject: String,
     pub from_name: String,
@@ -143,7 +148,7 @@ impl Store {
     pub fn insert_message(&self, m: &NewMessage) -> Result<i64> {
         self.atomic(|s| {
             let mut refs: Vec<&String> = Vec::new();
-            for r in m.in_reply_to.iter().chain(&m.references) {
+            for r in m.references.iter().chain(&m.in_reply_to) {
                 if !refs.contains(&r) {
                     refs.push(r);
                 }
@@ -175,7 +180,9 @@ impl Store {
                     m.date,
                     m.size,
                     m.flags.bits(),
-                    m.attachments.iter().any(|a| a.content_id.is_none()),
+                    m.attachments
+                        .iter()
+                        .any(|a| !(a.inline && a.mime.starts_with("image/"))),
                     m.headers,
                     text,
                     m.body_html,
@@ -218,12 +225,14 @@ impl Store {
 
     fn put_grams(&self, id: i64, texts: &[&str]) -> Result<()> {
         self.conn
-            .execute("DELETE FROM cjk_grams WHERE message_id = ?1", [id])?;
-        let mut put = self
-            .conn
-            .prepare_cached("INSERT INTO cjk_grams(gram, message_id) VALUES (?1, ?2)")?;
-        for g in bigrams(texts) {
-            put.execute(params![g, id])?;
+            .execute("DELETE FROM cjk_idx WHERE rowid = ?1", [id])?;
+        let g = grams(texts);
+        if !g.is_empty() {
+            let joined = g.iter().map(String::as_str).collect::<Vec<_>>().join(" ");
+            self.conn.execute(
+                "INSERT INTO cjk_idx(rowid, grams) VALUES (?1, ?2)",
+                params![id, joined],
+            )?;
         }
         Ok(())
     }
@@ -249,6 +258,9 @@ impl Store {
             }
         }
         if let Some(mid) = &m.message_id {
+            for t in parent.query_map([mid], |r| r.get(0))? {
+                found.push(t?);
+            }
             for t in siblings.query_map([mid], |r| r.get(0))? {
                 found.push(t?);
             }

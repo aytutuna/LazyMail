@@ -21,13 +21,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 const V1: &str = "
 CREATE TABLE folders(
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    remote_id TEXT,
     role TEXT,
     uidvalidity INTEGER,
     uidnext INTEGER,
     highestmodseq INTEGER,
     delta_link TEXT
 );
+
+CREATE UNIQUE INDEX folders_remote ON folders(remote_id) WHERE remote_id IS NOT NULL;
+CREATE UNIQUE INDEX folders_name ON folders(name) WHERE remote_id IS NULL;
 
 CREATE TABLE threads(id INTEGER PRIMARY KEY);
 
@@ -70,13 +74,6 @@ CREATE TABLE message_refs(
 );
 CREATE INDEX message_refs_ref ON message_refs(ref);
 CREATE INDEX message_refs_msg ON message_refs(message_id);
-
-CREATE TABLE cjk_grams(
-    gram TEXT NOT NULL,
-    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    PRIMARY KEY(gram, message_id)
-) WITHOUT ROWID;
-CREATE INDEX cjk_grams_msg ON cjk_grams(message_id);
 
 CREATE TABLE labels(
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -135,6 +132,9 @@ CREATE VIRTUAL TABLE msg_fts USING fts5(
     content='messages', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2', prefix='2 3 4'
 );
+CREATE VIRTUAL TABLE cjk_idx USING fts5(
+    grams, content='', contentless_delete=1, detail='none', tokenize='ascii'
+);
 CREATE VIRTUAL TABLE msg_tri USING fts5(
     subject, from_text, body_text,
     content='messages', content_rowid='id',
@@ -148,6 +148,7 @@ CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
         SELECT new.id, new.subject, new.from_text, new.body_text WHERE new.cjk = 1;
 END;
 CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+    DELETE FROM cjk_idx WHERE rowid = old.id;
     INSERT INTO msg_fts(msg_fts, rowid, subject, from_text, to_text, body_text)
         VALUES ('delete', old.id, old.subject, old.from_text, old.to_text, old.body_text);
     INSERT INTO msg_tri(msg_tri, rowid, subject, from_text, body_text)

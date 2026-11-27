@@ -63,11 +63,11 @@ const COMMON: usize = 2000;
 enum Text {
     None,
     Words(String),
-    /// Words of three characters or more go to the trigram index, two-character CJK words to
-    /// the bigram table, anything shorter or mixed to a scan.
+    /// Words of three characters or more go to the trigram index, one and two character CJK
+    /// words to the gram index, anything else short or mixed to a scan.
     Cjk {
         trigrams: Option<String>,
-        bigrams: Vec<String>,
+        grams: Vec<String>,
         scan: Vec<String>,
     },
 }
@@ -86,18 +86,17 @@ fn plan(text: &str) -> Text {
         return Text::None;
     }
     if text.chars().any(is_cjk_or_thai) {
-        let (mut long, mut bigrams, mut scan) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut long, mut grams, mut scan) = (Vec::new(), Vec::new(), Vec::new());
         for w in words {
             match w.chars().count() {
-                0..=1 => scan.push(w),
-                2 if w.chars().all(is_cjk_or_thai) => bigrams.push(w),
-                2 => scan.push(w),
+                1..=2 if w.chars().all(is_cjk_or_thai) => grams.push(format!("\"{w}\"")),
+                0..=2 => scan.push(w),
                 _ => long.push(format!("\"{w}\"")),
             }
         }
         return Text::Cjk {
             trigrams: (!long.is_empty()).then(|| long.join(" ")),
-            bigrams,
+            grams,
             scan,
         };
     }
@@ -127,12 +126,12 @@ impl Store {
             Text::Words(m) => (Some("msg_fts"), Some(m)),
             Text::Cjk {
                 trigrams,
-                bigrams,
+                grams,
                 scan,
             } => {
-                for g in bigrams {
-                    conds.push("m.id IN (SELECT message_id FROM cjk_grams WHERE gram = ?)".into());
-                    args.push(Value::Text(g));
+                if !grams.is_empty() {
+                    conds.push("m.id IN (SELECT rowid FROM cjk_idx WHERE cjk_idx MATCH ?)".into());
+                    args.push(Value::Text(grams.join(" ")));
                 }
                 for w in scan {
                     conds.push(

@@ -10,13 +10,15 @@ pub fn has_cjk(texts: &[&str]) -> bool {
     texts.iter().any(|t| t.chars().any(is_cjk_or_thai))
 }
 
-/// Every pair of neighbouring CJK or Thai characters, which is how two-character words are found.
-pub fn bigrams(texts: &[&str]) -> BTreeSet<String> {
+/// Every CJK or Thai character and every pair of neighbours, which is how one and two
+/// character words are found.
+pub fn grams(texts: &[&str]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for t in texts {
         let mut prev: Option<char> = None;
         for c in t.chars() {
             if is_cjk_or_thai(c) {
+                out.insert(c.to_string());
                 if let Some(p) = prev {
                     out.insert([p, c].iter().collect());
                 }
@@ -127,8 +129,11 @@ mod tests {
     }
 
     #[test]
-    fn bigrams_stay_inside_runs() {
-        let g = bigrams(&["会议室 a 北京"]);
-        assert_eq!(g.into_iter().collect::<Vec<_>>(), ["会议", "北京", "议室"]);
+    fn grams_stay_inside_runs() {
+        let g = grams(&["会议室 a 北京"]);
+        assert_eq!(
+            g.into_iter().collect::<Vec<_>>(),
+            ["京", "会", "会议", "北", "北京", "室", "议", "议室"]
+        );
     }
 }
