@@ -33,10 +33,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Dovecot
-        run: sudo apt-get install -y --no-install-recommends dovecot-core dovecot-imapd
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dovecot-core dovecot-imapd
       - name: Test against the servers
         run: |
-          eval "$(testdata/servers/start.sh)"
+          testdata/servers/start.sh > "$RUNNER_TEMP/servers.env"
+          . "$RUNNER_TEMP/servers.env"
           cargo test --workspace -- --include-ignored
       - name: Stop the servers
         if: always()
