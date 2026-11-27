@@ -100,6 +100,8 @@ fn is_temporary(t: &str) -> bool {
             "[inuse]",
             "[limit]",
             "too many simultaneous connections",
+            "account exceeded command or bandwidth limits",
+            "[overquota]",
         ]
         .iter()
         .any(|s| t.contains(s))
@@ -381,6 +383,10 @@ mod tests {
                 "454 4.7.0 Too many login attempts, please try again later.",
             ),
             (Provider::Fastmail, "NO [INUSE] mailbox busy"),
+            (
+                Provider::Gmail,
+                "NO [ALERT] Account exceeded command or bandwidth limits. (Failure)",
+            ),
         ] {
             assert_eq!(classify_login_error(p, text, true), None, "{text}");
         }
