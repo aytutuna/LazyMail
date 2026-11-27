@@ -6,6 +6,7 @@ mod logs;
 mod messages;
 mod outbox;
 mod schema;
+mod search;
 mod secrets;
 mod wrap;
 
@@ -19,6 +20,7 @@ pub use folders::{Folder, SyncState};
 pub use logs::{SettingChange, UndoEntry, UNDO_DAYS};
 pub use messages::{Attachment, Flags, Message, NewAttachment, NewMessage};
 pub use outbox::{OutboxItem, OutboxState};
+pub use search::{SearchHit, SearchQuery, MARK_END, MARK_START};
 pub use wrap::{load_or_create_key, StoreKey, TestWrapper, Wrapper};
 
 /// One account's encrypted database and attachment files.
