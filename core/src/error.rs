@@ -20,12 +20,24 @@ pub enum CoreError {
     Unsupported { detail: String },
 }
 
+pub(crate) type Result<T, E = CoreError> = std::result::Result<T, E>;
+
+pub(crate) fn invalid(detail: impl Into<String>) -> CoreError {
+    CoreError::Invalid {
+        detail: detail.into(),
+    }
+}
+
+pub(crate) fn not_found(detail: impl Into<String>) -> CoreError {
+    CoreError::NotFound {
+        detail: detail.into(),
+    }
+}
+
 impl From<lazymail_store::Error> for CoreError {
     fn from(e: lazymail_store::Error) -> Self {
         match e {
-            lazymail_store::Error::NotFound => CoreError::NotFound {
-                detail: "no such row".into(),
-            },
+            lazymail_store::Error::NotFound => not_found("no such row"),
             e => CoreError::Storage {
                 detail: e.to_string(),
             },
@@ -58,9 +70,7 @@ impl From<lazymail_graph::Error> for CoreError {
             E::NeedsSignIn => CoreError::SignIn {
                 detail: "sign in again".into(),
             },
-            E::NotFound => CoreError::NotFound {
-                detail: "not found on the server".into(),
-            },
+            E::NotFound => not_found("not found on the server"),
             E::Store(e) => e.into(),
             e => CoreError::Network {
                 detail: e.to_string(),
@@ -72,7 +82,7 @@ impl From<lazymail_graph::Error> for CoreError {
 impl From<lazymail_smtp::Error> for CoreError {
     fn from(e: lazymail_smtp::Error) -> Self {
         match e {
-            lazymail_smtp::Error::Draft(d) => CoreError::Invalid { detail: d.into() },
+            lazymail_smtp::Error::Draft(d) => invalid(d),
             lazymail_smtp::Error::Store(e) => e.into(),
         }
     }

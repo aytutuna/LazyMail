@@ -1,7 +1,15 @@
+mod accounts;
 mod callbacks;
 #[cfg(feature = "dev-key")]
 mod devkey;
 mod error;
+mod facade;
+mod mail;
+mod mailfolder;
+mod outbox;
+mod pin;
+mod settings;
+mod shared;
 mod types;
 
 uniffi::setup_scaffolding!();
@@ -12,6 +20,7 @@ pub use callbacks::{
 #[cfg(feature = "dev-key")]
 pub use devkey::DevKey;
 pub use error::CoreError;
+pub use facade::Core;
 pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

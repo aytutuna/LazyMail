@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use lazymail_accounts::{Resource, TokenError, TokenSource};
+
 use crate::types::CoreEvent;
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -59,4 +63,45 @@ pub trait TokenProvider: Send + Sync {
 #[uniffi::export(callback_interface)]
 pub trait EventListener: Send + Sync {
     fn on_event(&self, event: CoreEvent);
+}
+
+pub(crate) struct Wrap(pub Box<dyn WrappingKey>);
+
+impl lazymail_store::Wrapper for Wrap {
+    fn wrap(&self, aad: &[u8], plain: &[u8]) -> lazymail_store::Result<Vec<u8>> {
+        self.0
+            .wrap(aad.to_vec(), plain.to_vec())
+            .map_err(|e| lazymail_store::Error::Wrapper(e.to_string()))
+    }
+
+    fn unwrap(&self, aad: &[u8], wrapped: &[u8]) -> lazymail_store::Result<Vec<u8>> {
+        self.0
+            .unwrap(aad.to_vec(), wrapped.to_vec())
+            .map_err(|e| lazymail_store::Error::Wrapper(e.to_string()))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Tokens(pub Arc<dyn TokenProvider>);
+
+impl TokenSource for Tokens {
+    async fn access_token(
+        &self,
+        account_id: &str,
+        resource: Resource,
+    ) -> Result<String, TokenError> {
+        let provider = self.0.clone();
+        let id = account_id.to_string();
+        let resource = match resource {
+            Resource::Mail => TokenResource::Mail,
+            Resource::Graph => TokenResource::Graph,
+        };
+        tokio::task::spawn_blocking(move || provider.access_token(id, resource))
+            .await
+            .map_err(|e| TokenError::Failed(e.to_string()))?
+            .map_err(|e| match e {
+                TokenFailure::InteractionRequired => TokenError::InteractionRequired,
+                TokenFailure::Failed { detail } => TokenError::Failed(detail),
+            })
+    }
 }
