@@ -391,7 +391,13 @@ pub(crate) fn new_message(folder_id: i64, f: &Fetched) -> NewMessage {
     m.to = list(p.to());
     m.cc = list(p.cc());
     if let Some(d) = p.date() {
-        m.date = d.to_timestamp();
+        // The Date header is the sender's word; a message cannot be dated after it arrived, and
+        // a far-future date would keep it inside the phone's body window for good.
+        let sent = d.to_timestamp();
+        m.date = match f.date {
+            Some(arrived) if sent > arrived + 86400 => arrived,
+            _ => sent,
+        };
     }
     m.message_id = p.message_id().map(str::to_string);
     m.in_reply_to = p.in_reply_to().and_then(|l| l.first()).map(str::to_string);
@@ -461,6 +467,20 @@ mod tests {
             Some(1_672_734_600)
         );
         assert_eq!(internal_date("nonsense"), None);
+    }
+
+    #[test]
+    fn a_date_after_arrival_is_not_believed() {
+        let fetched = |arrived| Fetched {
+            uid: 1,
+            date: Some(arrived),
+            header: Some(b"Subject: x\r\nDate: Tue, 03 Jan 2040 10:00:00 +0000\r\n\r\n".to_vec()),
+            ..Default::default()
+        };
+        // Arrived on 2023-01-03 12:00 UTC.
+        assert_eq!(new_message(1, &fetched(1_672_747_200)).date, 1_672_747_200);
+        // A later arrival than the claimed date leaves the header alone.
+        assert_eq!(new_message(1, &fetched(2_300_000_000)).date, 2_209_197_600);
     }
 
     fn params(list: &[(&'static str, &'static str)]) -> Params<'static> {

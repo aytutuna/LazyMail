@@ -365,8 +365,13 @@ fn apply_changes(
                 }
             }
             if let Some(l) = &f.labels {
-                s.set_labels(id, l)?;
-                touched = true;
+                let mut new = l.clone();
+                new.sort();
+                new.dedup();
+                if new != s.labels(id)? {
+                    s.set_labels(id, l)?;
+                    touched = true;
+                }
             }
             changed += touched as u32;
         }

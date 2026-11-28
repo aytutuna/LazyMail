@@ -419,6 +419,15 @@ impl Store {
             .optional()?)
     }
 
+    /// The labels of one message, sorted.
+    pub fn labels(&self, id: i64) -> Result<Vec<String>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT label FROM labels WHERE message_id = ?1 ORDER BY label")?;
+        let rows = st.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Gmail messages whose row has lost its UID because no folder listed them any more.
     pub fn unplaced_gmail(&self) -> Result<Vec<i64>> {
         let mut st = self
