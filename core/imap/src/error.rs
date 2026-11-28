@@ -43,10 +43,3 @@ impl From<async_imap::error::Error> for Error {
         }
     }
 }
-
-impl Error {
-    /// True for failures worth another try after a pause: the connection dropped or timed out.
-    pub fn is_transient(&self) -> bool {
-        matches!(self, Error::Closed | Error::Io(_) | Error::Busy(_))
-    }
-}

@@ -658,6 +658,11 @@ async fn a_stop_ends_a_sync_that_is_waiting_on_the_server() {
          C: <tag> CAPABILITY\n\
          S: * CAPABILITY IMAP4rev1\n\
          S: <tag> OK done\n\
+         C: <tag> SELECT \"INBOX\"\n\
+         S: * 0 EXISTS\n\
+         S: * OK [UIDVALIDITY 5] ok\n\
+         S: * OK [UIDNEXT 1] ok\n\
+         S: <tag> OK [READ-WRITE] done\n\
          C: <tag> LIST \"\" \"*\"\n\
          C: <tag> never answered\n",
         xoauth2_base64("u@contoso.example", "access-1")
@@ -679,4 +684,15 @@ async fn a_stop_ends_a_sync_that_is_waiting_on_the_server() {
         .expect("run ends while the server is silent")
         .unwrap();
     drop(replay);
+}
+
+#[tokio::test]
+async fn gmails_download_limit_at_sign_in_waits_for_the_next_day() {
+    let script = "S: * OK server ready\n\
+                  C: <tag> LOGIN \"u\" \"pw\"\n\
+                  S: <tag> NO [ALERT] Account exceeded command or bandwidth limits. (Failure)\n";
+    let replay = serve(script);
+    let err = open(&replay, Provider::Gmail, true).await.err().unwrap();
+    assert!(matches!(err, Error::DownloadLimit), "{err:?}");
+    replay.finish().unwrap();
 }

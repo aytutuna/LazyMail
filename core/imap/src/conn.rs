@@ -504,6 +504,7 @@ async fn greeting(client: &mut Client<Stream>) -> Result<()> {
 fn login_error(e: async_imap::error::Error, server: &Server, worked_before: bool) -> Error {
     use async_imap::error::Error as E;
     match e {
+        E::No(text) | E::Bad(text) if is_download_limit(&text) => Error::DownloadLimit,
         E::No(text) | E::Bad(text) => {
             match classify_login_error(server.provider, &text, worked_before) {
                 Some(failure) => Error::Auth(failure),

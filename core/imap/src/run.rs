@@ -332,14 +332,16 @@ impl<T: TokenSource> Imap<T> {
     ) -> Result<()> {
         let mut conn = stop.guard(self.connect()).await?;
         let watched = folder.unwrap_or("INBOX");
+        // What the folder looked like when the sync began. A change that lands during the sync or
+        // before the IDLE shows up in the next SELECT, so it is not slept through, and a quiet
+        // folder is not synced a second time.
+        let sel = conn.select(watched).await?;
+        let mut synced = Some((sel.validity, sel.uidnext, sel.exists, sel.modseq));
         if folder.is_none() {
             stop.guard(self.sync_all(&mut conn)).await?;
         } else {
             stop.guard(self.sync_watched(&mut conn, watched)).await?;
         }
-        // What the folder looked like at the last sync. A change that lands between the sync
-        // and the IDLE shows up in the next SELECT, so it is not slept through.
-        let mut synced = None;
         loop {
             let sel = conn.select(watched).await?;
             let now = (sel.validity, sel.uidnext, sel.exists, sel.modseq);
