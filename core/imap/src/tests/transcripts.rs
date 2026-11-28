@@ -622,3 +622,27 @@ async fn a_folder_that_answers_oddly_does_not_stop_the_others() {
     drop(conn);
     replay.finish().unwrap();
 }
+
+#[tokio::test]
+async fn mail_announced_before_the_idle_go_ahead_is_not_slept_through() {
+    let script = format!(
+        "{}C: <tag> IDLE\n\
+         S: * 5 EXISTS\n\
+         S: + idling\n\
+         C: DONE\n\
+         S: <tag> OK Idle terminated\n",
+        login(GMAIL_CAPS)
+    );
+    let replay = serve(&script);
+    let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
+    let end = conn
+        .idle(
+            std::time::Duration::from_secs(30),
+            &tokio::sync::Notify::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(end, crate::conn::IdleEnd::Changed);
+    drop(conn);
+    replay.finish().unwrap();
+}

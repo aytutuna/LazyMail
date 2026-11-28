@@ -416,6 +416,9 @@ impl Connection {
         stop: &tokio::sync::Notify,
     ) -> Result<IdleEnd> {
         let tag = self.session.run_command("IDLE").await?;
+        // Mail that lands between the last SELECT and the server's go-ahead may be announced
+        // before it, and would otherwise be slept through.
+        let mut early = false;
         loop {
             let next = tokio::time::timeout(COMMAND_TIMEOUT, self.session.read_response())
                 .await
@@ -428,13 +431,23 @@ impl Connection {
                     information,
                     ..
                 }) if *t == tag => return Err(refusal(information.as_deref().unwrap_or(""))),
+                Some(
+                    Response::MailboxData(MailboxDatum::Exists(_))
+                    | Response::Expunge(_)
+                    | Response::Fetch(..)
+                    | Response::Vanished { .. },
+                ) => early = true,
                 Some(_) => {}
             }
         }
-        let end = tokio::select! {
-            r = self.wait_for_change() => r?,
-            _ = tokio::time::sleep(max) => IdleEnd::Timeout,
-            _ = stop.notified() => IdleEnd::Stopped,
+        let end = if early {
+            IdleEnd::Changed
+        } else {
+            tokio::select! {
+                r = self.wait_for_change() => r?,
+                _ = tokio::time::sleep(max) => IdleEnd::Timeout,
+                _ = stop.notified() => IdleEnd::Stopped,
+            }
         };
         self.session.run_command_untagged("DONE").await?;
         self.collect(&tag).await?;

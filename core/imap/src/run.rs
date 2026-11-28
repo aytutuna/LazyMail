@@ -14,8 +14,9 @@ use crate::error::{Error, Result};
 use crate::folders;
 use crate::sync::{drop_unplaced, sync_folder, Policy, Progress, Summary};
 
-/// A server may drop an IDLE that lasts longer than 29 minutes.
-const IDLE_MAX: Duration = Duration::from_secs(25 * 60);
+/// A server may drop an IDLE that lasts longer than 29 minutes; a shorter one also finds a
+/// connection that went dead without a word (a NAT timeout, a change of network) sooner.
+const IDLE_MAX: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_secs(5 * 60);
 const PAUSED_CHECK: Duration = Duration::from_secs(60);
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
