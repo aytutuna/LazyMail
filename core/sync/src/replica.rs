@@ -113,6 +113,9 @@ pub struct Replica<F> {
     pub(crate) order: HashMap<String, usize>,
     /// When this device first read each lease message, on its own clock.
     pub(crate) lease_seen: HashMap<String, u64>,
+    /// The latest expiry read from each holder; a lease that does not
+    /// outlast it is an old copy.
+    pub(crate) lease_high: HashMap<DeviceId, u64>,
     next_pos: usize,
     pub(crate) join: JoinState,
     reach: (Option<String>, Option<String>),
@@ -144,6 +147,7 @@ impl<F: Folder> Replica<F> {
             leases: HashMap::new(),
             order: HashMap::new(),
             lease_seen: HashMap::new(),
+            lease_high: HashMap::new(),
             next_pos: 0,
             join: JoinState::default(),
             reach: (None, None),
@@ -200,6 +204,7 @@ impl<F: Folder> Replica<F> {
         self.entries.clear();
         self.devices.clear();
         self.senders.clear();
+        self.lease_high.clear();
         self.leases.clear();
     }
 
@@ -477,6 +482,7 @@ impl<F: Folder> Replica<F> {
                     self.seen.clear();
                     self.devices.clear();
                     self.senders.clear();
+                    self.lease_high.clear();
                     self.leases.clear();
                     self.lease_seen.clear();
                     switched = true;
@@ -616,6 +622,11 @@ impl<F: Folder> Replica<F> {
                 if l.holder != from {
                     return None;
                 }
+                let high = self.lease_high.entry(from).or_insert(0);
+                if l.expires <= *high {
+                    return None;
+                }
+                *high = l.expires;
                 let now = (self.clock)();
                 self.lease_seen.entry(id.to_string()).or_insert(now);
                 self.leases.insert(id.to_string(), l);
@@ -851,6 +862,7 @@ impl<F: Folder> Replica<F> {
         self.seen.clear();
         self.devices.clear();
         self.senders.clear();
+        self.lease_high.clear();
         self.leases.clear();
         self.join = JoinState::default();
         self.clear_rotation();
@@ -955,6 +967,7 @@ impl<F: Folder> Replica<F> {
         self.seen.clear();
         self.devices.clear();
         self.senders.clear();
+        self.lease_high.clear();
         self.leases.clear();
         self.seen
             .insert(rotation_id, Meta::Rotation { excludes: false });

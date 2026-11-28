@@ -35,8 +35,10 @@
 //! taking over. Clocks only decide when a lease has run out, with a margin.
 //!
 //! What a person with only the mailbox password can still do is delete
-//! messages and write ones nobody opens; they cannot read or change settings,
-//! join a device or move a lease.
+//! messages and write ones nobody opens; they cannot read or change settings
+//! or join a device. Deleting a lease moves it, and copies of old leases are
+//! ignored once a newer one from the same device has been read, which a
+//! device that has just started cannot know.
 
 mod crypto;
 mod folder;

@@ -733,3 +733,48 @@ async fn a_change_written_after_the_rotation_was_read_is_published_again() {
     a.pull().await.unwrap();
     assert_eq!(a.get("late"), Some("x"));
 }
+
+#[tokio::test]
+async fn a_copy_of_an_old_lease_does_not_move_the_lease() {
+    let now = Arc::new(AtomicU64::new(1_800_000_000_000));
+    let at = || -> Clock {
+        let n = now.clone();
+        Arc::new(move || n.load(Ordering::SeqCst))
+    };
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), at())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    let lease_bodies = |ids: Vec<String>| {
+        let folder = folder.clone();
+        async move {
+            let mut out = Vec::new();
+            for id in ids {
+                let body = folder.fetch(&id).await.unwrap().unwrap();
+                if String::from_utf8_lossy(&body).contains("\"what\":\"lease\"") {
+                    out.push(body);
+                }
+            }
+            out
+        }
+    };
+    assert!(a.hold_lease().await.unwrap());
+    let old = lease_bodies(folder.list().await.unwrap()).await.remove(0);
+    b.pull().await.unwrap();
+
+    // A copy lands in the folder, then the holder renews.
+    folder.append(old.clone()).await.unwrap();
+    now.fetch_add(60_000, Ordering::SeqCst);
+    assert!(a.hold_lease().await.unwrap());
+    b.pull().await.unwrap();
+    assert_eq!(b.lease_holder(), Some(a.id()));
+    assert_eq!(b.leases.len(), 1);
+
+    // After the holder lets go, a copy of what it held does not bring it back.
+    a.drop_lease().await.unwrap();
+    b.pull().await.unwrap();
+    folder.append(old).await.unwrap();
+    b.pull().await.unwrap();
+    assert_eq!(b.lease_holder(), None);
+}

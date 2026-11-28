@@ -100,11 +100,16 @@ impl<F: Folder> Replica<F> {
 
     pub(crate) async fn lease_write(&mut self) -> Result<()> {
         let me = self.me.id();
+        // Each lease has to outlast the last one so a copy of the last one
+        // is told apart from it.
+        let last = self.lease_high.get(&me).copied().unwrap_or(0);
         let lease = Lease {
             holder: me,
-            expires: (self.clock)() + LEASE_MS,
+            expires: ((self.clock)() + LEASE_MS).max(last + 1),
         };
         let id = self.put(Kind::Lease, &lease, Meta::Lease(me)).await?;
+        let high = self.lease_high.entry(me).or_insert(0);
+        *high = (*high).max(lease.expires);
         self.lease_seen.insert(id.clone(), (self.clock)());
         self.leases.insert(id, lease);
         Ok(())
@@ -118,7 +123,10 @@ impl<F: Folder> Replica<F> {
         let ranked = self.ranked((self.clock)());
         let won = ranked.first().is_some_and(|(d, _)| *d == me);
         let mine = self.lease_messages(me);
-        let newest = mine.iter().max_by_key(|id| self.order.get(*id)).cloned();
+        let newest = mine
+            .iter()
+            .max_by_key(|id| (self.leases.get(*id).map(|l| l.expires), self.order.get(*id)))
+            .cloned();
         if won || self.main_device() == Some(me) {
             let old: Vec<String> = mine
                 .into_iter()
