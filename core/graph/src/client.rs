@@ -1,10 +1,8 @@
 use std::time::Duration;
 
-use lazymail_accounts::{Resource, TokenError, TokenSource};
+use lazymail_accounts::{tls_config, Resource, TokenError, TokenSource};
 use reqwest::header::{HeaderValue, AUTHORIZATION, RETRY_AFTER};
 use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
-use rustls::ClientConfig;
-use rustls_platform_verifier::BuilderVerifierExt;
 use serde::de::DeserializeOwned;
 
 pub const BASE_URL: &str = "https://graph.microsoft.com/v1.0";
@@ -167,13 +165,4 @@ fn retry_after(resp: &Response) -> Option<Duration> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
-}
-
-fn tls_config() -> ClientConfig {
-    ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
-        .with_safe_default_protocol_versions()
-        .expect("tls versions")
-        .with_platform_verifier()
-        .expect("platform verifier")
-        .with_no_client_auth()
 }
