@@ -101,8 +101,8 @@ fn env() -> Option<Env> {
     Some(Env {
         imap: addr("LAZYMAIL_TEST_IMAP")?,
         imaps: addr("LAZYMAIL_TEST_IMAPS")?,
-        user: std::env::var("LAZYMAIL_TEST_USER").ok()?,
-        pass: std::env::var("LAZYMAIL_TEST_PASS").ok()?,
+        user: std::env::var("LAZYMAIL_TEST_USER2").ok()?,
+        pass: std::env::var("LAZYMAIL_TEST_PASS2").ok()?,
     })
 }
 
@@ -892,6 +892,7 @@ async fn the_first_download_does_the_inbox_first_and_reports_progress() {
     let inbox: Vec<&Progress> = progress.iter().filter(|p| p.folder == "INBOX").collect();
     assert!(!inbox.is_empty());
     assert!(inbox.iter().any(|p| p.done == p.total && p.total >= 1));
+    empty_inbox(&mut conn).await;
 }
 
 #[tokio::test]
@@ -947,6 +948,7 @@ async fn idle_brings_in_new_mail_and_stops_on_request() {
         .await
         .expect("run stops when asked")
         .unwrap();
+    empty_inbox(&mut conn).await;
 }
 
 #[tokio::test]
@@ -973,4 +975,14 @@ async fn a_refused_login_pauses_the_account_and_says_so_once() {
 
 async fn create(conn: &mut Connection, name: &str) {
     conn.create_folder(name).await.unwrap();
+}
+
+// The Inbox of the second test user is shared with other crates' tests, so what a test
+// delivered there goes again.
+async fn empty_inbox(conn: &mut Connection) {
+    conn.select("INBOX").await.unwrap();
+    conn.exec(r"STORE 1:* +FLAGS.SILENT (\Deleted)")
+        .await
+        .unwrap();
+    conn.exec("EXPUNGE").await.unwrap();
 }
