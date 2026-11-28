@@ -709,3 +709,68 @@ async fn gmails_download_limit_at_sign_in_waits_for_the_next_day() {
     assert!(matches!(err, Error::DownloadLimit), "{err:?}");
     replay.finish().unwrap();
 }
+
+#[tokio::test]
+async fn a_session_whose_inbox_will_not_select_still_syncs_the_other_folders() {
+    let script = format!(
+        "S: * OK The Microsoft Exchange IMAP4 service is ready.\n\
+         C: <tag> AUTHENTICATE XOAUTH2\n\
+         S: +\n\
+         C: {}\n\
+         S: <tag> OK [CAPABILITY IMAP4rev1] authenticated\n\
+         C: <tag> CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev1\n\
+         S: <tag> OK done\n\
+         C: <tag> SELECT \"INBOX\"\n\
+         S: * 0 EXISTS\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> LIST \"\" \"*\"\n\
+         S: * LIST () \"/\" \"INBOX\"\n\
+         S: * LIST () \"/\" \"Archive\"\n\
+         S: <tag> OK done\n\
+         C: <tag> SELECT \"INBOX\"\n\
+         S: * 0 EXISTS\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> SELECT \"Archive\"\n\
+         S: * 0 EXISTS\n\
+         S: * OK [UIDVALIDITY 5] ok\n\
+         S: * OK [UIDNEXT 1] ok\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH\n\
+         S: <tag> OK done\n\
+         C: <tag> SELECT \"INBOX\"\n\
+         S: * 0 EXISTS\n\
+         S: <tag> OK [READ-WRITE] done\n",
+        xoauth2_base64("u@contoso.example", "access-1")
+    );
+    let replay = serve(&script);
+    let tokens = StaticTokens::default();
+    tokens.set("o1", Resource::Mail, Ok("access-1".into()));
+    let (imap, _account, mut rx, _signin, _dir) = outlook_imap(&replay, tokens);
+    let imap = Arc::new(imap);
+    let stop = crate::Stop::new();
+    let task = {
+        let (imap, stop) = (imap.clone(), stop.clone());
+        tokio::spawn(async move { imap.run(&stop).await })
+    };
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let update = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the session syncs without waiting for a retry")
+            .unwrap();
+        match update {
+            Update::FolderFailed { folder, .. } => seen.push(format!("failed {folder}")),
+            Update::Synced { folder, .. } => seen.push(format!("synced {folder}")),
+            _ => {}
+        }
+    }
+    assert_eq!(seen, ["failed INBOX", "synced Archive"]);
+    stop.stop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(replay);
+}

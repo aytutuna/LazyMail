@@ -334,16 +334,43 @@ impl<T: TokenSource> Imap<T> {
         // What the folder looked like when the sync began. A change that lands during the sync or
         // before the IDLE shows up in the next SELECT, so it is not slept through, and a quiet
         // folder is not synced a second time.
-        let sel = conn.select(watched).await?;
-        let mut synced = Some((sel.validity, sel.uidnext, sel.exists, sel.modseq));
+        // A folder the server will not select must not keep the others from syncing, so a
+        // refusal here only leaves the snapshot empty.
+        let mut synced = match self.snapshot(&mut conn, watched).await? {
+            Snapshot::Of(s) => Some(s),
+            Snapshot::Refused(reason) => match folder {
+                Some(f) => return self.drop_watch(f, reason),
+                None => None,
+            },
+        };
         if folder.is_none() {
             stop.guard(self.sync_all(&mut conn)).await?;
         } else {
             stop.guard(self.sync_watched(&mut conn, watched)).await?;
         }
+        // Idling follows one folder; the others are looked at again now and then.
+        let mut full = false;
         loop {
-            let sel = conn.select(watched).await?;
-            let now = (sel.validity, sel.uidnext, sel.exists, sel.modseq);
+            let now = match self.snapshot(&mut conn, watched).await? {
+                Snapshot::Of(s) => s,
+                Snapshot::Refused(reason) => {
+                    if let Some(f) = folder {
+                        return self.drop_watch(f, reason);
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(POLL) => {}
+                        _ = stop.stopped() => return Ok(()),
+                    }
+                    stop.guard(self.sync_all(&mut conn)).await?;
+                    continue;
+                }
+            };
+            if full {
+                stop.guard(self.sync_all(&mut conn)).await?;
+                synced = Some(now);
+                full = false;
+                continue;
+            }
             if synced != Some(now) {
                 stop.guard(self.sync_watched(&mut conn, watched)).await?;
                 synced = Some(now);
@@ -358,6 +385,7 @@ impl<T: TokenSource> Imap<T> {
                     _ = stop.stopped() => return Ok(()),
                 }
                 synced = None;
+                full = folder.is_none();
             } else {
                 match conn.idle(IDLE_MAX, stop).await? {
                     IdleEnd::Stopped => {
@@ -366,11 +394,43 @@ impl<T: TokenSource> Imap<T> {
                     }
                     // Flag changes leave no trace in the SELECT of a server without CONDSTORE.
                     IdleEnd::Changed => synced = None,
-                    IdleEnd::Timeout => {}
+                    IdleEnd::Timeout => full = folder.is_none(),
                 }
             }
         }
     }
+
+    async fn snapshot(&self, conn: &mut Connection, folder: &str) -> Result<Snapshot> {
+        match conn.select(folder).await {
+            Ok(sel) => Ok(Snapshot::Of((
+                sel.validity,
+                sel.uidnext,
+                sel.exists,
+                sel.modseq,
+            ))),
+            Err(e @ (Error::Refused(_) | Error::Protocol(_))) => {
+                Ok(Snapshot::Refused(e.to_string()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    // A watched folder that was deleted or renamed on the server will not come back by
+    // reconnecting; the watch ends and the app is told.
+    fn drop_watch(&self, folder: &str, reason: String) -> Result<()> {
+        let _ = self.updates.send(Update::FolderFailed {
+            folder: folder.to_string(),
+            reason,
+        });
+        Ok(())
+    }
+}
+
+type Seen = (u32, Option<u32>, u32, Option<i64>);
+
+enum Snapshot {
+    Of(Seen),
+    Refused(String),
 }
 
 fn unix_now() -> i64 {
