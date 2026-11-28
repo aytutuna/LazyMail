@@ -15,6 +15,7 @@ imap_port=${LAZYMAIL_IMAP_PORT:-$base}
 imaps_port=${LAZYMAIL_IMAPS_PORT:-$((base + 1))}
 smtp_port=${LAZYMAIL_SMTP_PORT:-$((base + 2))}
 smtps_port=${LAZYMAIL_SMTPS_PORT:-$((base + 3))}
+smtp_plain_port=${LAZYMAIL_SMTP_PLAIN_PORT:-$((base + 4))}
 
 root=${DOVECOT_ROOT:-}
 if [ -z "$root" ] && [ -x "$HOME/tools/dovecot/usr/sbin/dovecot" ]; then
@@ -36,8 +37,10 @@ esac
 rm -rf "$state"
 mkdir -p "$state/run" "$state/mail" "$state/smtp"
 
+# CA:TRUE, as in the certificate Proton Bridge makes for itself.
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+  -addext "basicConstraints=critical,CA:TRUE" \
   -keyout "$state/key.pem" -out "$state/cert.pem" 2>/dev/null
 
 sed \
@@ -68,7 +71,7 @@ fi
 
 "$dovecot" -c "$state/dovecot.conf" >&2
 python3 "$here/smtp_sink.py" "$state/smtp" "$state/cert.pem" "$state/key.pem" \
-  "$smtp_port" "$smtps_port" > "$state/smtp.log" 2>&1 &
+  "$smtp_port" "$smtps_port" "$smtp_plain_port" > "$state/smtp.log" 2>&1 &
 echo $! > "$state/smtp.pid"
 
 wait_port() {
@@ -83,12 +86,14 @@ wait_port "$imap_port"
 wait_port "$imaps_port"
 wait_port "$smtp_port"
 wait_port "$smtps_port"
+wait_port "$smtp_plain_port"
 
 cat <<ENV | tee "$state/env"
 export LAZYMAIL_TEST_IMAP=127.0.0.1:$imap_port
 export LAZYMAIL_TEST_IMAPS=127.0.0.1:$imaps_port
 export LAZYMAIL_TEST_SMTP=127.0.0.1:$smtp_port
 export LAZYMAIL_TEST_SMTPS=127.0.0.1:$smtps_port
+export LAZYMAIL_TEST_SMTP_PLAIN=127.0.0.1:$smtp_plain_port
 export LAZYMAIL_TEST_USER=alice
 export LAZYMAIL_TEST_PASS=alice-pass
 export LAZYMAIL_TEST_USER2=bob

@@ -152,10 +152,10 @@ jobs:
           xcrun simctl boot "$iphone"
       - name: Build the core
         run: apple/build-core.sh
-      - name: Cross-build the accounts crate
+      - name: Cross-build the accounts and smtp crates
         run: |
-          cargo build -p lazymail-accounts --target aarch64-apple-ios
-          cargo build -p lazymail-accounts --target aarch64-apple-ios-sim
+          cargo build -p lazymail-accounts -p lazymail-smtp --target aarch64-apple-ios
+          cargo build -p lazymail-accounts -p lazymail-smtp --target aarch64-apple-ios-sim
       - name: Write the project
         run: xcodegen generate --spec apple/project.yml
       - name: Build for the iPad
@@ -211,8 +211,8 @@ jobs:
         run: cargo install cargo-ndk --version $CARGO_NDK_VERSION --locked
       - name: Build the core
         run: android/build-core.sh
-      - name: Cross-build the accounts crate
-        run: cargo ndk -t arm64-v8a -t x86_64 build -p lazymail-accounts
+      - name: Cross-build the accounts and smtp crates
+        run: cargo ndk -t arm64-v8a -t x86_64 build -p lazymail-accounts -p lazymail-smtp
       - name: Build the app
         working-directory: android
         run: ./gradlew assembleDebug --console=plain
@@ -265,8 +265,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build and test the store
         run: cargo test -p lazymail-store --target x86_64-pc-windows-msvc
-      - name: Build the store for arm64
-        run: cargo build -p lazymail-store --target aarch64-pc-windows-msvc
+      - name: Build accounts and smtp for x64
+        run: cargo build -p lazymail-accounts -p lazymail-smtp --target x86_64-pc-windows-msvc
+      - name: Build for arm64
+        run: cargo build -p lazymail-store -p lazymail-accounts -p lazymail-smtp --target aarch64-pc-windows-msvc
 
   store-apple:
     runs-on: macos-26
