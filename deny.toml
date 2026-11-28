@@ -38,3 +38,5 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
+# TLS goes through aws-lc-rs only.
+deny = [{ name = "ring" }]
