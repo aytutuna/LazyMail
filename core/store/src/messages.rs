@@ -405,6 +405,20 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// A row in the folder that has no UID yet and carries this Message-ID: a message moved
+    /// here when the server did not say what UID it got.
+    pub fn find_unplaced(&self, folder_id: i64, message_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM messages
+                 WHERE folder_id = ?1 AND uid IS NULL AND gm_msgid IS NULL AND message_id = ?2",
+                params![folder_id, message_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Gmail messages whose row has lost its UID because no folder listed them any more.
     pub fn unplaced_gmail(&self) -> Result<Vec<i64>> {
         let mut st = self

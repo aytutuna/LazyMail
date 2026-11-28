@@ -314,6 +314,18 @@ fn insert_header(
         return Ok(None);
     }
     let m = parse::new_message(folder_id, f);
+    // A message moved here without a COPYUID has a row waiting for its UID.
+    if let Some(id) = m
+        .message_id
+        .as_deref()
+        .map(|mid| store.find_unplaced(folder_id, mid))
+        .transpose()?
+        .flatten()
+    {
+        store.set_ids(id, Some(f.uid), None)?;
+        store.set_flags(id, m.flags)?;
+        return Ok(None);
+    }
     let id = store.insert_message(&m)?;
     Ok(Some(Pending {
         id,

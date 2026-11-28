@@ -27,15 +27,21 @@ pub struct Appended {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveUndo {
     pub message_id: i64,
+    /// The Message-ID header, to find the message again when the row or its UID is gone.
+    pub rfc_message_id: Option<String>,
     pub from_folder: i64,
+    pub from_uidvalidity: Option<u32>,
     pub from_uid: Option<u32>,
     pub to_folder: i64,
-    pub to_uidvalidity: u32,
-    pub to_uid: u32,
+    /// Both None when the server gave no COPYUID.
+    pub to_uidvalidity: Option<u32>,
+    pub to_uid: Option<u32>,
 }
 
 struct Located {
     folder_id: i64,
+    uidvalidity: Option<u32>,
+    rfc_message_id: Option<String>,
     folder: String,
     uid: u32,
     flags: Flags,
@@ -54,6 +60,8 @@ fn locate(store: &Mutex<Store>, message_id: i64) -> Result<Located> {
         .ok_or(lazymail_store::Error::NotFound)?;
     Ok(Located {
         folder_id: m.folder_id,
+        uidvalidity: folder.sync.uidvalidity,
+        rfc_message_id: m.message_id,
         folder: folder.name,
         uid,
         flags: m.flags,
@@ -122,8 +130,8 @@ impl Connection {
     }
 
     /// Moves a message to another stored folder, with MOVE when the server has it and COPY,
-    /// \Deleted and EXPUNGE otherwise. The row keeps its id, thread and attachments. When the
-    /// server reports the new UID the move is written to the undo log.
+    /// \Deleted and EXPUNGE otherwise. The row keeps its id, thread and attachments, and the
+    /// move goes to the undo log, with the new UID when the server reports it.
     pub async fn move_message(
         &mut self,
         store: &Mutex<Store>,
@@ -154,23 +162,21 @@ impl Connection {
             })
         });
         let s = store.lock().unwrap();
-        match moved {
-            Some(m) => {
-                s.move_message(message_id, to_folder, Some(m.uid))?;
-                let undo = MoveUndo {
-                    message_id,
-                    from_folder: at.folder_id,
-                    from_uid: Some(at.uid),
-                    to_folder,
-                    to_uidvalidity: m.uidvalidity,
-                    to_uid: m.uid,
-                };
-                let payload = serde_json::to_vec(&undo).expect("plain data serializes");
-                s.push_undo("imap-move", &payload, now)?;
-            }
-            // Without a UID the next sync of the folder brings the message in again.
-            None => s.delete_message(message_id)?,
-        }
+        // Without a UID the row waits in the new folder and takes the UID the next sync of that
+        // folder finds under the same Message-ID.
+        s.move_message(message_id, to_folder, moved.map(|m| m.uid))?;
+        let undo = MoveUndo {
+            message_id,
+            rfc_message_id: at.rfc_message_id,
+            from_folder: at.folder_id,
+            from_uidvalidity: at.uidvalidity,
+            from_uid: Some(at.uid),
+            to_folder,
+            to_uidvalidity: moved.map(|m| m.uidvalidity),
+            to_uid: moved.map(|m| m.uid),
+        };
+        let payload = serde_json::to_vec(&undo).expect("plain data serializes");
+        s.push_undo("imap-move", &payload, now)?;
         Ok(moved)
     }
 

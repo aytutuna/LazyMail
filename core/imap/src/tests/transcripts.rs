@@ -490,6 +490,8 @@ fn with_message(store: &Arc<Mutex<Store>>, uid: u32) -> (i64, i64) {
             folder_id: inbox.id,
             uid: Some(uid),
             subject: "old".into(),
+            message_id: Some("g1@example.com".into()),
+            body_text: Some("hello box".into()),
             flags: Flags::default(),
             ..Default::default()
         })
@@ -499,28 +501,49 @@ fn with_message(store: &Arc<Mutex<Store>>, uid: u32) -> (i64, i64) {
 
 #[tokio::test]
 async fn a_server_without_move_or_uidplus_copies_then_expunges() {
-    let script = old_server(
+    // Such a server says nothing about the new UID, so the row waits in the new folder until
+    // that folder is synced and shows the same Message-ID.
+    let archive_sync = format!(
+        "C: <tag> SELECT \"Archive\"\n\
+         S: * 1 EXISTS\n\
+         S: * OK [UIDVALIDITY 22] UIDVALIDITY value\n\
+         S: * OK [UIDNEXT 8] The next unique identifier value\n\
+         S: <tag> OK [READ-WRITE] SELECT completed.\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH 7\n\
+         S: <tag> OK SEARCH completed.\n\
+         C: <tag> UID FETCH 7 (UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER] BODYSTRUCTURE)\n\
+         {}\n\
+         S: <tag> OK FETCH completed.\n",
+        header_fetch(1, 7, "\\Seen", "")
+    );
+    let script = old_server(&format!(
         "C: <tag> UID SEARCH DELETED\n\
          S: * SEARCH\n\
          S: <tag> OK SEARCH completed.\n\
          C: <tag> UID COPY 38 \"Archive\"\n\
-         S: <tag> OK [COPYUID 22 38 7] COPY completed.\n\
+         S: <tag> OK COPY completed.\n\
          C: <tag> UID STORE 38 +FLAGS.SILENT (\\Deleted)\n\
          S: <tag> OK STORE completed.\n\
          C: <tag> EXPUNGE\n\
          S: * 3 EXPUNGE\n\
-         S: <tag> OK EXPUNGE completed.\n",
-    );
+         S: <tag> OK EXPUNGE completed.\n{archive_sync}"
+    ));
     let replay = serve(&script);
     let mut conn = open(&replay, Provider::Other, false).await.unwrap();
     let (_dir, store) = store();
     let (id, archive) = with_message(&store, 38);
-    let moved = conn
-        .move_message(&store, id, archive, 1000)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!((moved.uidvalidity, moved.uid), (22, 7));
+    let moved = conn.move_message(&store, id, archive, 1000).await.unwrap();
+    assert!(moved.is_none());
+    let m = store.lock().unwrap().message(id).unwrap().unwrap();
+    assert_eq!((m.folder_id, m.uid), (archive, None));
+    let undo = store.lock().unwrap().undo_entries(1001).unwrap();
+    let u: crate::MoveUndo = serde_json::from_slice(&undo[0].payload).unwrap();
+    assert_eq!(u.rfc_message_id.as_deref(), Some("g1@example.com"));
+    assert_eq!((u.from_uid, u.to_uid, u.to_uidvalidity), (Some(38), None, None));
+
+    let s = sync_named(&mut conn, &store, "Archive", &Policy::default()).await;
+    assert_eq!(s.added, 0);
     let m = store.lock().unwrap().message(id).unwrap().unwrap();
     assert_eq!((m.folder_id, m.uid), (archive, Some(7)));
     drop(conn);

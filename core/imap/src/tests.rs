@@ -833,7 +833,13 @@ async fn actions_change_the_server_and_the_store() {
                 u.to_uid,
                 u.to_uidvalidity
             ),
-            (msg.id, from_f, to_f, moved.uid, moved.uidvalidity)
+            (
+                msg.id,
+                from_f,
+                to_f,
+                Some(moved.uid),
+                Some(moved.uidvalidity)
+            )
         );
         assert!(check
             .find_by_message_id(from, "act1@example.com")
