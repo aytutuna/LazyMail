@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """SMTP sink for tests: accepts any mail and writes each message to a directory.
 
-usage: smtp_sink.py DIR CERT KEY PLAIN_PORT TLS_PORT
+usage: smtp_sink.py DIR CERT KEY PLAIN_PORT TLS_PORT NOSTARTTLS_PORT
 
 AUTH PLAIN and LOGIN work for the fixed test users, STARTTLS is offered on the
-plain port, and the second port speaks TLS from the first byte.
+plain port, the second port speaks TLS from the first byte and the third never
+offers STARTTLS. A message to a recipient starting with "drop@" is stored, then
+the connection is closed without the final reply.
 """
 import asyncio
 import base64
@@ -13,7 +15,7 @@ import os
 import ssl
 import sys
 
-out_dir, cert, key, plain_port, tls_port = sys.argv[1:6]
+out_dir, cert, key, plain_port, tls_port, bare_port = sys.argv[1:7]
 users_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users")
 USERS = dict(
     line.split(":{PLAIN}", 1) for line in open(users_file).read().splitlines() if line
@@ -52,7 +54,7 @@ def address(cmd):
     return arg[: end + 1] if arg.startswith("<") and end > 0 else arg.split(" ")[0]
 
 
-async def session(reader, writer, tls):
+async def session(reader, writer, tls, starttls=True):
     def send(text):
         writer.write(text.encode() + b"\r\n")
 
@@ -67,12 +69,12 @@ async def session(reader, writer, tls):
                 send("250-8BITMIME")
                 send("250-SIZE 10485760")
                 send("250-AUTH PLAIN LOGIN")
-                if not tls:
+                if starttls and not tls:
                     send("250-STARTTLS")
                 send("250 ENHANCEDSTATUSCODES")
             elif verb == "HELO":
                 send("250 sink")
-            elif verb == "STARTTLS" and not tls:
+            elif verb == "STARTTLS" and starttls and not tls:
                 send("220 go ahead")
                 await writer.drain()
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -136,6 +138,8 @@ async def session(reader, writer, tls):
                     f.write(f"X-Sink-To: {' '.join(rcpts)}\r\n".encode())
                     f.write(f"X-Sink-Auth: {'yes' if authed else 'no'}\r\n".encode())
                     f.write(b"\r\n" + body)
+                if any(r.lower().startswith("<drop@") for r in rcpts):
+                    raise ConnectionError
                 send(f"250 2.0.0 queued as {n}")
                 sender, rcpts = None, []
             elif verb == "RSET":
@@ -165,8 +169,13 @@ async def main():
     secure = await asyncio.start_server(
         lambda r, w: session(r, w, True), "127.0.0.1", int(tls_port), ssl=ctx
     )
-    async with plain, secure:
-        await asyncio.gather(plain.serve_forever(), secure.serve_forever())
+    bare = await asyncio.start_server(
+        lambda r, w: session(r, w, False, False), "127.0.0.1", int(bare_port)
+    )
+    async with plain, secure, bare:
+        await asyncio.gather(
+            plain.serve_forever(), secure.serve_forever(), bare.serve_forever()
+        )
 
 
 asyncio.run(main())

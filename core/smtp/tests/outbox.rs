@@ -245,26 +245,30 @@ mod sink {
     struct Sink {
         addr: String,
         tls_addr: String,
+        plain_addr: String,
         dir: std::path::PathBuf,
         cert: Vec<u8>,
         user: String,
         pass: String,
     }
 
-    fn sink() -> Option<Sink> {
-        let var = |n: &str| std::env::var(n).ok();
-        let dir = std::path::PathBuf::from(var("LAZYMAIL_TEST_SMTP_DIR")?);
+    /// These tests are ignored unless the servers from testdata/servers/start.sh run, so a
+    /// missing setting is an error, not a reason to pass.
+    fn sink() -> Sink {
+        let var = |n: &str| std::env::var(n).unwrap_or_else(|_| panic!("{n} is not set"));
+        let dir = std::path::PathBuf::from(var("LAZYMAIL_TEST_SMTP_DIR"));
         // start.sh puts the certificate next to the sink's mail directory.
-        let pem = std::fs::read_to_string(dir.parent()?.join("cert.pem")).ok()?;
+        let pem = std::fs::read_to_string(dir.parent().unwrap().join("cert.pem")).unwrap();
         let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-        Some(Sink {
-            addr: var("LAZYMAIL_TEST_SMTP")?,
-            tls_addr: var("LAZYMAIL_TEST_SMTPS")?,
+        Sink {
+            addr: var("LAZYMAIL_TEST_SMTP"),
+            tls_addr: var("LAZYMAIL_TEST_SMTPS"),
+            plain_addr: var("LAZYMAIL_TEST_SMTP_PLAIN"),
             dir,
-            cert: STANDARD.decode(b64).ok()?,
-            user: var("LAZYMAIL_TEST_USER")?,
-            pass: var("LAZYMAIL_TEST_PASS")?,
-        })
+            cert: STANDARD.decode(b64).unwrap(),
+            user: var("LAZYMAIL_TEST_USER"),
+            pass: var("LAZYMAIL_TEST_PASS"),
+        }
     }
 
     impl Sink {
@@ -296,10 +300,10 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn password_over_starttls_delivers_to_every_recipient_without_bcc() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let acc = s.account(Security::StartTls, false);
         let m = mail(&acc.address, "starttls");
-        let smtp = Smtp::new(
+        let mut smtp = Smtp::new(
             &acc,
             &Auth::Password(s.pass.clone()),
             &StaticTokens::default(),
@@ -328,10 +332,10 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn implicit_tls_delivers() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let acc = s.account(Security::Tls, false);
         let m = mail(&acc.address, "implicit");
-        let smtp = Smtp::new(
+        let mut smtp = Smtp::new(
             &acc,
             &Auth::Password(s.pass.clone()),
             &StaticTokens::default(),
@@ -346,10 +350,10 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn an_untrusted_certificate_is_not_accepted() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let acc = s.account(Security::StartTls, false);
         let m = mail(&acc.address, "untrusted");
-        let smtp = Smtp::new(
+        let mut smtp = Smtp::new(
             &acc,
             &Auth::Password(s.pass.clone()),
             &StaticTokens::default(),
@@ -357,17 +361,113 @@ mod sink {
         )
         .await
         .unwrap();
-        assert!(smtp.send(&m.raw).await.is_err());
+        let e = smtp.send(&m.raw).await.unwrap_err();
+        assert!(matches!(e, SendError::Offline(_)), "{e:?}");
         assert!(s.with_id(&m.message_id).is_empty());
     }
 
     #[tokio::test]
     #[ignore]
+    async fn a_different_pinned_certificate_is_refused() {
+        let s = sink();
+        let acc = s.account(Security::StartTls, false);
+        let m = mail(&acc.address, "wrong-pin");
+        let mut other = s.cert.clone();
+        other[10] ^= 1;
+        let mut smtp = Smtp::new(
+            &acc,
+            &Auth::Password(s.pass.clone()),
+            &StaticTokens::default(),
+            Some(&other),
+        )
+        .await
+        .unwrap();
+        let e = smtp.send(&m.raw).await.unwrap_err();
+        assert!(
+            matches!(&e, SendError::Offline(t) if t.contains("not the one you confirmed")),
+            "{e:?}"
+        );
+        assert!(s.with_id(&m.message_id).is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn a_server_without_starttls_is_refused() {
+        let s = sink();
+        let acc = account(&s.user, &s.plain_addr, Security::StartTls, false);
+        let m = mail(&acc.address, "no-starttls");
+        let mut smtp = Smtp::new(
+            &acc,
+            &Auth::Password(s.pass.clone()),
+            &StaticTokens::default(),
+            Some(&s.cert),
+        )
+        .await
+        .unwrap();
+        let e = smtp.send(&m.raw).await.unwrap_err();
+        assert!(
+            matches!(&e, SendError::Offline(t) if t.contains("STARTTLS")),
+            "{e:?}"
+        );
+        assert!(s.with_id(&m.message_id).is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn a_connection_lost_after_the_message_is_unsure() {
+        let s = sink();
+        let acc = s.account(Security::StartTls, false);
+        let m = build(&Draft {
+            from: Some(Address::new(&acc.address)),
+            to: vec![Address::new("drop@example.test")],
+            subject: "dropped".into(),
+            text: Some("hello".into()),
+            date: 1_700_000_000,
+            ..Draft::default()
+        })
+        .unwrap();
+        let mut smtp = Smtp::new(
+            &acc,
+            &Auth::Password(s.pass.clone()),
+            &StaticTokens::default(),
+            Some(&s.cert),
+        )
+        .await
+        .unwrap();
+        let e = smtp.send(&m.raw).await.unwrap_err();
+        assert!(matches!(e, SendError::Unsure(_)), "{e:?}");
+        // The server did take it, which is why the outcome cannot be called a failure.
+        assert_eq!(s.with_id(&m.message_id).len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn one_connection_carries_several_messages() {
+        let s = sink();
+        let acc = s.account(Security::Tls, false);
+        let mut smtp = Smtp::new(
+            &acc,
+            &Auth::Password(s.pass.clone()),
+            &StaticTokens::default(),
+            Some(&s.cert),
+        )
+        .await
+        .unwrap();
+        let (a, b) = (mail(&acc.address, "first"), mail(&acc.address, "second"));
+        smtp.send(&a.raw).await.unwrap();
+        smtp.send(&b.raw).await.unwrap();
+        smtp.close().await;
+        assert_eq!(s.with_id(&a.message_id).len(), 1);
+        assert_eq!(s.with_id(&b.message_id).len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
     async fn a_wrong_password_is_an_auth_failure() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let acc = s.account(Security::StartTls, false);
         let m = mail(&acc.address, "badpw");
-        let smtp = Smtp::new(
+        let mut smtp = Smtp::new(
             &acc,
             &Auth::Password("nope".into()),
             &StaticTokens::default(),
@@ -383,7 +483,7 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn the_outbox_sends_then_files_the_copy() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let dir = TempDir::new().unwrap();
         let st = store(&dir);
         let mut acc = s.account(Security::StartTls, false);
@@ -405,7 +505,7 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn providers_that_file_sent_mail_get_no_copy() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let dir = TempDir::new().unwrap();
         let st = store(&dir);
         let mut acc = s.account(Security::StartTls, true);
@@ -423,7 +523,7 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn a_copy_that_fails_is_retried_and_the_mail_is_not_sent_twice() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let dir = TempDir::new().unwrap();
         let st = store(&dir);
         let mut acc = s.account(Security::StartTls, false);
@@ -453,7 +553,7 @@ mod sink {
     #[tokio::test]
     #[ignore]
     async fn a_refused_sign_in_pauses_only_that_account_and_keeps_the_mail() {
-        let Some(s) = sink() else { return };
+        let s = sink();
         let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
         let mut signin = SignIn::default();
 

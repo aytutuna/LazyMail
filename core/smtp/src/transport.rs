@@ -6,19 +6,29 @@ use lazymail_accounts::{
 };
 use lettre::address::Envelope;
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
+use lettre::transport::smtp::client::{AsyncSmtpConnection, TlsParameters};
+use lettre::transport::smtp::extension::ClientId;
 use lettre::transport::smtp::Error as SmtpError;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use mail_parser::MessageParser;
+use tokio::time::timeout;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+const SEND_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendError {
     /// The server refused the sign-in; the account needs attention, the mail is fine.
     Auth(AuthFailure),
-    /// Network trouble, a busy server or a 4xx reply: try again later.
+    /// The server answered with a 4xx reply, so it did not take the mail: try again later.
     Temporary(String),
     /// The server or the message itself will never work, for example a refused recipient.
     Permanent(String),
+    /// No usable connection: the server could not be reached, the encryption failed or the
+    /// certificate is not the confirmed one. Nothing was sent, and the rest of the queue
+    /// would fail the same way.
+    Offline(String),
+    /// The connection broke after the server may have taken the mail. It may have been sent.
+    Unsure(String),
 }
 
 pub enum Auth {
@@ -28,12 +38,21 @@ pub enum Auth {
 }
 
 pub struct Smtp {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
+    host: String,
+    port: u16,
+    security: Security,
+    credentials: Credentials,
+    mechanisms: Vec<Mechanism>,
+    pin: Option<Vec<u8>>,
     provider: Provider,
+    conn: Option<AsyncSmtpConnection>,
 }
 
 impl Smtp {
-    /// `pinned_cert` (DER) is trusted in addition to the system roots, for Proton Bridge.
+    /// With `pinned_cert` (DER) the server's certificate must be exactly that one and the usual
+    /// chain and name checks are skipped, for Proton Bridge's own certificate. Credentials are
+    /// only sent once it matched. The connection is made by the first `send` and kept for the
+    /// next ones.
     pub async fn new<T: TokenSource>(
         account: &Account,
         auth: &Auth,
@@ -64,47 +83,136 @@ impl Smtp {
                 (token, vec![Mechanism::Xoauth2])
             }
         };
-
-        let mut tls = TlsParameters::builder(ep.host.clone());
-        if let Some(der) = pinned_cert {
-            let cert = Certificate::from_der(der.to_vec())
-                .map_err(|e| SendError::Permanent(e.to_string()))?;
-            tls = tls.add_root_certificate(cert);
-        }
-        let tls = tls
-            .build()
-            .map_err(|e| SendError::Permanent(e.to_string()))?;
-        let tls = match ep.security {
-            Security::Tls => Tls::Wrapper(tls),
-            Security::StartTls => Tls::Required(tls),
-        };
-        let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&ep.host)
-            .port(ep.port)
-            .tls(tls)
-            .credentials(Credentials::new(user, secret))
-            .authentication(mechanisms)
-            .timeout(Some(Duration::from_secs(30)))
-            .build();
         Ok(Smtp {
-            transport,
+            host: ep.host.clone(),
+            port: ep.port,
+            security: ep.security,
+            credentials: Credentials::new(user, secret),
+            mechanisms,
+            pin: pinned_cert.map(<[u8]>::to_vec),
             provider: account.provider,
+            conn: None,
         })
     }
 
     /// Sends a stored message. Recipients come from To, Cc and Bcc; the Bcc header does not
     /// go out.
-    pub async fn send(&self, raw: &[u8]) -> Result<(), SendError> {
+    pub async fn send(&mut self, raw: &[u8]) -> Result<(), SendError> {
         let envelope = envelope(raw)?;
-        self.transport
-            .send_raw(&envelope, &strip_bcc(raw))
-            .await
-            .map(|_| ())
-            .map_err(|e| self.classify(&e))
+        let body = strip_bcc(raw);
+        let mut kept = self.conn.take();
+        // A connection the server dropped while idle would fail the send after the message
+        // was written, which looks like an unsure outcome, so it is tried first.
+        if let Some(c) = kept.as_mut() {
+            if c.has_broken() || !c.test_connected().await {
+                kept = None;
+            }
+        }
+        let mut conn = match kept {
+            Some(c) => c,
+            None => timeout(CONNECT_TIMEOUT, self.connect())
+                .await
+                .unwrap_or_else(|_| Err(SendError::Offline("timed out connecting".into())))?,
+        };
+        let sent = match timeout(SEND_TIMEOUT, conn.send(&envelope, &body)).await {
+            Ok(r) => r.map_err(|e| self.send_error(&e)),
+            Err(_) => Err(SendError::Unsure("timed out waiting for the server".into())),
+        };
+        match sent {
+            Ok(_) => {
+                self.conn = Some(conn);
+                Ok(())
+            }
+            Err(e) => {
+                conn.abort().await;
+                Err(e)
+            }
+        }
     }
 
-    fn classify(&self, e: &SmtpError) -> SendError {
+    pub async fn close(&mut self) {
+        if let Some(mut c) = self.conn.take() {
+            let _ = c.quit().await;
+        }
+    }
+
+    async fn connect(&self) -> Result<AsyncSmtpConnection, SendError> {
+        let mut tls = TlsParameters::builder(self.host.clone());
+        if self.pin.is_some() {
+            tls = tls
+                .dangerous_accept_invalid_certs(true)
+                .dangerous_accept_invalid_hostnames(true);
+        }
+        let tls = tls.build().map_err(|e| SendError::Offline(e.to_string()))?;
+        let hello = ClientId::default();
+        let addr = (self.host.as_str(), self.port);
+        let offline = |e: SmtpError| SendError::Offline(detail(&e));
+
+        let mut conn = match self.security {
+            Security::Tls => AsyncSmtpConnection::connect_tokio1(
+                addr,
+                Some(CONNECT_TIMEOUT),
+                &hello,
+                Some(tls),
+                None,
+            )
+            .await
+            .map_err(offline)?,
+            Security::StartTls => {
+                let mut c = AsyncSmtpConnection::connect_tokio1(
+                    addr,
+                    Some(CONNECT_TIMEOUT),
+                    &hello,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(offline)?;
+                if !c.can_starttls() {
+                    c.abort().await;
+                    return Err(SendError::Offline(
+                        "the server does not offer STARTTLS".into(),
+                    ));
+                }
+                c.starttls(tls, &hello).await.map_err(offline)?;
+                c
+            }
+        };
+
+        if let Some(pin) = &self.pin {
+            if conn.peer_certificate().ok().as_ref() != Some(pin) {
+                conn.abort().await;
+                return Err(SendError::Offline(
+                    "the server's certificate is not the one you confirmed".into(),
+                ));
+            }
+        }
+        if let Err(e) = conn.auth(&self.mechanisms, &self.credentials).await {
+            conn.abort().await;
+            return Err(match self.reply_error(&e) {
+                SendError::Temporary(t) | SendError::Permanent(t) => SendError::Offline(t),
+                other => other,
+            });
+        }
+        Ok(conn)
+    }
+
+    /// An error from the conversation itself. A reply means the server did not take the mail;
+    /// anything else (a broken connection, a garbled or missing answer) comes after the
+    /// message was handed over, so it may have been taken.
+    fn send_error(&self, e: &SmtpError) -> SendError {
+        if e.is_transient() || e.is_permanent() {
+            self.reply_error(e)
+        } else if e.is_client() {
+            SendError::Permanent(detail(e))
+        } else {
+            SendError::Unsure(detail(e))
+        }
+    }
+
+    fn reply_error(&self, e: &SmtpError) -> SendError {
         let code = e.status().map(|c| c.to_string());
-        let detail = std::error::Error::source(e).map_or_else(|| e.to_string(), |s| s.to_string());
+        let detail = detail(e);
         let text = match &code {
             Some(c) => format!("{c} {detail}"),
             None => detail,
@@ -123,6 +231,10 @@ impl Smtp {
             SendError::Temporary(text)
         }
     }
+}
+
+fn detail(e: &SmtpError) -> String {
+    std::error::Error::source(e).map_or_else(|| e.to_string(), |s| s.to_string())
 }
 
 fn envelope(raw: &[u8]) -> Result<Envelope, SendError> {

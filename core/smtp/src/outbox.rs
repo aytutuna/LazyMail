@@ -63,7 +63,7 @@ impl<T: TokenSource, S: SentBox> Outbox<'_, T, S> {
         if due.is_empty() {
             return Ok(report);
         }
-        let smtp = match Smtp::new(
+        let mut smtp = match Smtp::new(
             account,
             &self.auth,
             self.tokens,
@@ -116,7 +116,9 @@ impl<T: TokenSource, S: SentBox> Outbox<'_, T, S> {
                     report.events.extend(signin.report_failure(account, f, at));
                     break;
                 }
-                Err(SendError::Temporary(e)) if now - item.created < GIVE_UP_AFTER => {
+                Err(SendError::Temporary(e) | SendError::Offline(e) | SendError::Unsure(e))
+                    if now - item.created < GIVE_UP_AFTER =>
+                {
                     self.store.outbox_fail(
                         item.id,
                         &e,
@@ -125,7 +127,7 @@ impl<T: TokenSource, S: SentBox> Outbox<'_, T, S> {
                     )?;
                     report.retry += 1;
                 }
-                Err(SendError::Temporary(e)) => {
+                Err(SendError::Temporary(e) | SendError::Offline(e) | SendError::Unsure(e)) => {
                     let msg = format!("gave up after three days: {e}");
                     self.store.outbox_fail(item.id, &msg, None, false)?;
                     report.failed += 1;
