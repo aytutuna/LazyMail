@@ -500,11 +500,11 @@ fn with_message(store: &Arc<Mutex<Store>>, uid: u32) -> (i64, i64) {
 #[tokio::test]
 async fn a_server_without_move_or_uidplus_copies_then_expunges() {
     let script = old_server(
-        "C: <tag> UID COPY 38 \"Archive\"\n\
-         S: <tag> OK [COPYUID 22 38 7] COPY completed.\n\
-         C: <tag> UID SEARCH DELETED\n\
+        "C: <tag> UID SEARCH DELETED\n\
          S: * SEARCH\n\
          S: <tag> OK SEARCH completed.\n\
+         C: <tag> UID COPY 38 \"Archive\"\n\
+         S: <tag> OK [COPYUID 22 38 7] COPY completed.\n\
          C: <tag> UID STORE 38 +FLAGS.SILENT (\\Deleted)\n\
          S: <tag> OK STORE completed.\n\
          C: <tag> EXPUNGE\n\
@@ -530,9 +530,7 @@ async fn a_server_without_move_or_uidplus_copies_then_expunges() {
 #[tokio::test]
 async fn without_uidplus_other_deleted_messages_are_not_expunged_with_ours() {
     let script = old_server(
-        "C: <tag> UID COPY 38 \"Archive\"\n\
-         S: <tag> OK [COPYUID 22 38 7] COPY completed.\n\
-         C: <tag> UID SEARCH DELETED\n\
+        "C: <tag> UID SEARCH DELETED\n\
          S: * SEARCH 12\n\
          S: <tag> OK SEARCH completed.\n",
     );
@@ -546,7 +544,7 @@ async fn without_uidplus_other_deleted_messages_are_not_expunged_with_ours() {
         .err()
         .unwrap();
     assert!(matches!(err, Error::Refused(_)), "{err:?}");
-    // The copy is on the server, but the row stays where it was.
+    // Nothing was copied, and the row stays where it was.
     assert_eq!(
         store.lock().unwrap().message(id).unwrap().unwrap().uid,
         Some(38)

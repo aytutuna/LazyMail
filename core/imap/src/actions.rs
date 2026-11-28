@@ -142,6 +142,7 @@ impl Connection {
         let reply = if self.caps.move_ {
             self.exec(&format!("UID MOVE {} {dest}", at.uid)).await?
         } else {
+            self.check_expungeable(at.uid).await?;
             let reply = self.exec(&format!("UID COPY {} {dest}", at.uid)).await?;
             self.expunge(at.uid).await?;
             reply
@@ -177,14 +178,15 @@ impl Connection {
     pub async fn delete_message(&mut self, store: &Mutex<Store>, message_id: i64) -> Result<()> {
         let at = locate(store, message_id)?;
         self.ensure(&at.folder).await?;
+        self.check_expungeable(at.uid).await?;
         self.expunge(at.uid).await?;
         store.lock().unwrap().delete_message(message_id)?;
         Ok(())
     }
 
-    // Marks one message \Deleted and removes it. Plain EXPUNGE would take every message
-    // that carries the flag, so without UIDPLUS it runs only when this is the only one.
-    async fn expunge(&mut self, uid: u32) -> Result<()> {
+    // Plain EXPUNGE takes every message that carries \Deleted, so without UIDPLUS it can run
+    // only when this is the only one. Asked before a COPY, so a refusal leaves nothing behind.
+    async fn check_expungeable(&mut self, uid: u32) -> Result<()> {
         if !self.caps.uidplus {
             let marked = self.uid_search("DELETED").await?;
             if marked.iter().any(|u| *u != uid) {
@@ -193,6 +195,11 @@ impl Connection {
                 ));
             }
         }
+        Ok(())
+    }
+
+    // Marks one message \Deleted and removes it.
+    async fn expunge(&mut self, uid: u32) -> Result<()> {
         self.exec(&format!("UID STORE {uid} +FLAGS.SILENT (\\Deleted)"))
             .await?;
         if self.caps.uidplus {
