@@ -419,7 +419,7 @@ fn remove_uids(
             let Some(id) = s.find_by_uid(folder_id, *u)? else {
                 continue;
             };
-            if gmail && s.message(id)?.is_some_and(|m| m.gm_msgid.is_some()) {
+            if gmail && s.gm_msgid(id)?.is_some() {
                 s.set_ids(id, None, None)?;
             } else {
                 s.delete_message(id)?;

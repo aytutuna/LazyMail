@@ -419,6 +419,17 @@ impl Store {
             .optional()?)
     }
 
+    /// Gmail's message id of a row, when it has one.
+    pub fn gm_msgid(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT gm_msgid FROM messages WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
     /// Rows in the folder that wait for a UID (not Gmail's, which `unplaced_gmail` covers).
     pub fn unplaced(&self, folder_id: i64) -> Result<Vec<i64>> {
         let mut st = self.conn.prepare(
