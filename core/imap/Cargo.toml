@@ -22,6 +22,5 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc
 [dev-dependencies]
 lazymail-store = { path = "../store", features = ["test-wrapper"] }
 lazymail-testserver = { path = "../testserver" }
-rustls-platform-verifier = "0.6"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
