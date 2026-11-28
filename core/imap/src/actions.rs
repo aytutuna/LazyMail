@@ -8,16 +8,9 @@ use crate::error::{Error, Result};
 use crate::sync::fetch_part;
 use crate::utf7;
 
-/// Where a moved message landed, when the server said (COPYUID).
+/// Where a moved or appended message landed, when the server said (COPYUID or APPENDUID).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Moved {
-    pub uidvalidity: u32,
-    pub uid: u32,
-}
-
-/// Where an appended message landed, when the server said (APPENDUID).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Appended {
+pub struct Placed {
     pub uidvalidity: u32,
     pub uid: u32,
 }
@@ -138,7 +131,7 @@ impl Connection {
         message_id: i64,
         to_folder: i64,
         now: i64,
-    ) -> Result<Option<Moved>> {
+    ) -> Result<Option<Placed>> {
         let at = locate(store, message_id)?;
         let to = store
             .lock()
@@ -156,7 +149,7 @@ impl Connection {
             reply
         };
         let moved = reply.copy_uid.and_then(|m| {
-            m.first.map(|uid| Moved {
+            m.first.map(|uid| Placed {
                 uidvalidity: m.validity,
                 uid,
             })
@@ -228,13 +221,13 @@ impl Connection {
         folder: &str,
         message: &[u8],
         flags: Flags,
-    ) -> Result<Option<Appended>> {
+    ) -> Result<Option<Placed>> {
         let reply = self
             .append(folder, &names(flags).join(" "), message)
             .await?;
         Ok(reply
             .append_uid
-            .map(|(uidvalidity, uid)| Appended { uidvalidity, uid }))
+            .map(|(uidvalidity, uid)| Placed { uidvalidity, uid }))
     }
 
     /// UIDs in a folder whose Message-ID header holds `message_id`; the SMTP step uses this

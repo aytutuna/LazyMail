@@ -14,7 +14,7 @@ pub mod utf7;
 #[cfg(test)]
 mod tests;
 
-pub use actions::{Appended, MoveUndo, Moved};
+pub use actions::{MoveUndo, Placed};
 pub use conn::{Capabilities, Connection, Credential, RemoteFolder, Server, Transport};
 pub use error::{Error, Result};
 pub use folders::role_of;
