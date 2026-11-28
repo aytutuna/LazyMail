@@ -340,7 +340,10 @@ impl<T: TokenSource> Graph<T> {
                     seen.insert(item.id.clone());
                 }
                 let mut raw = None;
-                if item.removed.is_none() && store.find_by_graph_id(&item.id)?.is_none() {
+                // A draft in the delta was edited, here or elsewhere, so it is read again.
+                let wanted = item.removed.is_none()
+                    && (item.is_draft || store.find_by_graph_id(&item.id)?.is_none());
+                if wanted {
                     match self.mime(&item.id).await {
                         Ok(b) => raw = Some(b),
                         // Gone since the delta was made; the next delta says so.
@@ -398,6 +401,11 @@ fn apply(
                 sum.removed += 1;
             }
         }
+    } else if let (Some(id), true, Some(_)) = (existing, item.is_draft, raw) {
+        // Last save wins. The row is replaced, so the draft gets a new local id.
+        s.delete_message(id)?;
+        insert(s, folder_id, item, raw)?;
+        sum.updated += 1;
     } else if let Some(id) = existing {
         let Some(m) = s.message(id)? else {
             return Ok(sum);
@@ -420,19 +428,29 @@ fn apply(
             sum.updated += 1;
         }
     } else {
-        let parsed = raw.and_then(mime::parse);
-        let id = s.insert_message(&item.new_message(
-            folder_id,
-            raw.map_or(0, <[u8]>::len),
-            parsed.as_ref(),
-        ))?;
-        if let Some(p) = &parsed {
-            let stored = s.message(id)?.map(|m| m.attachments).unwrap_or_default();
-            for (a, data) in stored.iter().zip(&p.attachment_data) {
-                s.put_attachment_data(a.id, data)?;
-            }
-        }
+        insert(s, folder_id, item, raw)?;
         sum.added += 1;
     }
     Ok(sum)
+}
+
+fn insert(
+    s: &Store,
+    folder_id: i64,
+    item: &MessageItem,
+    raw: Option<&[u8]>,
+) -> lazymail_store::Result<()> {
+    let parsed = raw.and_then(mime::parse);
+    let id = s.insert_message(&item.new_message(
+        folder_id,
+        raw.map_or(0, <[u8]>::len),
+        parsed.as_ref(),
+    ))?;
+    if let Some(p) = &parsed {
+        let stored = s.message(id)?.map(|m| m.attachments).unwrap_or_default();
+        for (a, data) in stored.iter().zip(&p.attachment_data) {
+            s.put_attachment_data(a.id, data)?;
+        }
+    }
+    Ok(())
 }

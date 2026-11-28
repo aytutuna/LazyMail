@@ -225,7 +225,10 @@ async fn first_sync_downloads_folders_and_mail() {
     assert_eq!(m2.attachments[0].mime, "application/pdf");
     // The bytes came with the message and are kept, so opening it needs no second download.
     assert_eq!(
-        e.store.attachment_data(m2.attachments[0].id).unwrap().unwrap(),
+        e.store
+            .attachment_data(m2.attachments[0].id)
+            .unwrap()
+            .unwrap(),
         b"%PDF-1.4
 %%EOF
 "
@@ -761,10 +764,62 @@ async fn an_interrupted_page_keeps_the_messages_already_fetched() {
 }
 
 #[tokio::test]
+async fn an_edited_draft_is_downloaded_again() {
+    let e = env().await;
+    e.mailbox().await;
+    let base = e.server.uri();
+    let d = "AAMkDRAFT=";
+    let delta = |token: &str, subject: &str| {
+        format!(
+            r#"{{"value":[{{"id":"{d}","subject":"{subject}","isRead":true,"isDraft":true}}],"@odata.deltaLink":"{base}/me/mailFolders/drafts-id/messages/delta?$deltatoken={token}"}}"#
+        )
+    };
+    e.json(
+        "/me/mailFolders/drafts-id/messages/delta",
+        &[("$select", SELECT)],
+        delta("d1", "First"),
+    )
+    .await;
+    e.json(
+        "/me/mailFolders/drafts-id/messages/delta",
+        &[("$deltatoken", "d1")],
+        delta("d2", "Second"),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/me/messages/{d}/$value")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            fs::read(format!("{}/tests/fixtures/message_1.eml", e.manifest())).unwrap(),
+            "message/rfc822",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let drafts = e.folder("drafts");
+    e.graph.sync_folder(&e.store, drafts.id).await.unwrap();
+    assert_eq!(e.message(d).subject, "First");
+    assert!(e.message(d).body_text.unwrap().contains("Notes from today"));
+
+    e.mime(d, "message_3.eml").await;
+    let sum = e.graph.sync_folder(&e.store, drafts.id).await.unwrap();
+    assert_eq!(sum.updated, 1);
+    let m = e.message(d);
+    assert_eq!(m.subject, "Second");
+    assert!(m.body_text.unwrap().contains("Three things"));
+    assert!(m.flags.draft);
+    assert_eq!(e.store.folder_graph_ids(drafts.id).unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_message_too_big_for_sendmail_is_refused_before_the_request() {
     let e = env().await;
     let raw = vec![b'x'; 3_100_000];
-    assert!(matches!(e.graph.send_mail(&raw).await, Err(Error::TooLarge)));
+    assert!(matches!(
+        e.graph.send_mail(&raw).await,
+        Err(Error::TooLarge)
+    ));
     assert!(e.server.received_requests().await.unwrap().is_empty());
 }
 
