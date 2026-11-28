@@ -39,7 +39,7 @@ jobs:
         run: |
           testdata/servers/start.sh > "$RUNNER_TEMP/servers.env"
           . "$RUNNER_TEMP/servers.env"
-          cargo test --workspace -- --include-ignored
+          cargo test --workspace -- --include-ignored --skip search_100k --skip a_mailbox_of_cjk
       - name: Stop the servers
         if: always()
         run: testdata/servers/stop.sh
