@@ -87,10 +87,24 @@ pub fn build(draft: &Draft) -> Result<Built, Error> {
     if draft.text.is_none() && draft.html.is_none() {
         return Err(Error::Draft("no body"));
     }
+    // mail-builder writes these values as they are, so a stray line break or '>' would add
+    // headers or recipients.
+    let addresses = [Some(from), draft.reply_to.as_ref()]
+        .into_iter()
+        .flatten()
+        .chain(draft.to.iter().chain(&draft.cc).chain(&draft.bcc));
+    for a in addresses {
+        check_address(&a.email)?;
+    }
+    let ids = draft.in_reply_to.iter().chain(&draft.references);
+    for id in ids.chain(draft.inline.iter().map(|i| &i.cid)) {
+        check_id(id)?;
+    }
     let id = match &draft.message_id {
         Some(id) => id.trim_matches(|c| c == '<' || c == '>').to_string(),
         None => new_message_id(&from.email)?,
     };
+    check_id(&id)?;
 
     let mut m = MessageBuilder::new()
         .message_id(id.clone())
@@ -166,6 +180,23 @@ fn body(draft: &Draft) -> MimePart<'_> {
         part = MimePart::new("multipart/mixed", parts);
     }
     part
+}
+
+fn check_address(email: &str) -> Result<(), Error> {
+    let plain = !email.contains(['<', '>', ',', ';', '"', '\r', '\n']);
+    if plain && email.parse::<lettre::Address>().is_ok() {
+        Ok(())
+    } else {
+        Err(Error::Draft("bad address"))
+    }
+}
+
+fn check_id(id: &str) -> Result<(), Error> {
+    let bad = |c: char| c.is_control() || c.is_whitespace() || c == '<' || c == '>';
+    if id.is_empty() || id.contains(bad) {
+        return Err(Error::Draft("bad message id"));
+    }
+    Ok(())
 }
 
 fn new_message_id(from: &str) -> Result<String, Error> {
@@ -309,6 +340,32 @@ mod tests {
         let mut d = draft();
         d.bcc = vec![Address::new("hidden@x.test")];
         assert!(text(&build(&d).unwrap()).contains("Bcc: <hidden@x.test>"));
+    }
+
+    #[test]
+    fn values_that_would_add_headers_or_recipients_are_refused() {
+        let refused = |f: &dyn Fn(&mut Draft)| {
+            let mut d = draft();
+            f(&mut d);
+            assert!(build(&d).is_err());
+        };
+        refused(&|d| d.message_id = Some("abc@x.test\r\nX-Evil: 1".into()));
+        refused(&|d| d.message_id = Some("a b@x.test".into()));
+        refused(&|d| d.in_reply_to = Some("a@x.test>\r\nX-Evil: 1".into()));
+        refused(&|d| d.references = vec!["ok@x.test".into(), "<b@x.test".into()]);
+        refused(&|d| {
+            d.html = Some("<img src=\"cid:l\">".into());
+            d.inline.push(InlineImage {
+                cid: "l>\r\nX-Evil: 1".into(),
+                content_type: "image/png".into(),
+                data: vec![1],
+            });
+        });
+        refused(&|d| d.to = vec![Address::new("bob@x.test>, <eve@y.test")]);
+        refused(&|d| d.cc = vec![Address::new("bob@x.test\r\nBcc: eve@y.test")]);
+        refused(&|d| d.bcc = vec![Address::new("\"a>,<b\"@x.test")]);
+        refused(&|d| d.from = Some(Address::new("not an address")));
+        refused(&|d| d.reply_to = Some(Address::new("a@x.test, b@y.test")));
     }
 
     #[test]
