@@ -1393,7 +1393,6 @@ dependencies = [
  "lazymail-testserver",
  "mail-parser",
  "rustls",
- "rustls-platform-verifier",
  "serde",
  "serde_json",
  "tempfile",
