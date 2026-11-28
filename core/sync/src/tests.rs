@@ -648,3 +648,68 @@ async fn a_copy_of_the_followed_rotation_is_not_a_conflict() {
     assert!(!a.pull().await.unwrap().conflict);
     b.set("k", "v").await.unwrap();
 }
+
+async fn delete_record_of(folder: &MemoryFolder, who: &R) {
+    let ids: Vec<String> = who
+        .seen
+        .iter()
+        .filter(|(_, m)| matches!(m, Meta::Device(d) if *d == who.id()))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        folder.delete(&id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_device_whose_record_was_deleted_can_still_be_removed() {
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let b = join(&mut a, &folder, "phone").await;
+    let mut thief = join(&mut a, &folder, "tablet").await;
+    thief.set("k", "v").await.unwrap();
+    delete_record_of(&folder, &thief).await;
+
+    // A running device and one that has just started agree on the list.
+    a.pull().await.unwrap();
+    assert_eq!(a.devices().len(), 2);
+    let key = a.key().unwrap().clone();
+    let mut restarted =
+        Replica::with_key(folder.clone(), Identity::generate("laptop2"), clock(), key);
+    restarted.pull().await.unwrap();
+    assert_eq!(restarted.devices().len(), 2);
+
+    // The writer is still named, and ending it works from either.
+    assert_eq!(a.unlisted_devices(), vec![thief.id()]);
+    let keep = [a.id(), b.id()];
+    a.remove_device(thief.id(), &keep).await.unwrap();
+    assert_eq!(a.key().unwrap().epoch(), 2);
+    assert!(thief.pull().await.unwrap().needs_rejoin);
+}
+
+#[tokio::test]
+async fn keep_only_ends_every_device_not_listed() {
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    let mut thief = join(&mut a, &folder, "tablet").await;
+    delete_record_of(&folder, &thief).await;
+    a.pull().await.unwrap();
+
+    assert!(matches!(
+        a.keep_only(&[b.id()]).await,
+        Err(crate::Error::RemoveSelf)
+    ));
+    assert!(matches!(
+        a.keep_only(&[a.id(), thief.id()]).await,
+        Err(crate::Error::UnknownDevice)
+    ));
+    a.keep_only(&[a.id(), b.id()]).await.unwrap();
+    assert!(!b.pull().await.unwrap().needs_rejoin);
+    assert_eq!(b.key().unwrap().epoch(), 2);
+    assert!(thief.pull().await.unwrap().needs_rejoin);
+}

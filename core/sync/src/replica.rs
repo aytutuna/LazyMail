@@ -105,6 +105,8 @@ pub struct Replica<F> {
     pub(crate) seen: HashMap<String, Meta>,
     entries: BTreeMap<String, Entry>,
     pub(crate) devices: HashMap<DeviceId, DeviceRecord>,
+    /// Devices whose messages opened under the current key, record or not.
+    senders: HashSet<DeviceId>,
     /// Lease messages by message id.
     pub(crate) leases: HashMap<String, Lease>,
     /// Where each message stands in the folder, oldest first.
@@ -138,6 +140,7 @@ impl<F: Folder> Replica<F> {
             seen: HashMap::new(),
             entries: BTreeMap::new(),
             devices: HashMap::new(),
+            senders: HashSet::new(),
             leases: HashMap::new(),
             order: HashMap::new(),
             lease_seen: HashMap::new(),
@@ -196,6 +199,7 @@ impl<F: Folder> Replica<F> {
         self.seen.clear();
         self.entries.clear();
         self.devices.clear();
+        self.senders.clear();
         self.leases.clear();
     }
 
@@ -470,6 +474,7 @@ impl<F: Folder> Replica<F> {
                     self.conflict = false;
                     self.seen.clear();
                     self.devices.clear();
+                    self.senders.clear();
                     self.leases.clear();
                     self.lease_seen.clear();
                     switched = true;
@@ -480,6 +485,15 @@ impl<F: Folder> Replica<F> {
                 break;
             }
         }
+        let listed: HashSet<DeviceId> = self
+            .seen
+            .values()
+            .filter_map(|m| match m {
+                Meta::Device(d) => Some(*d),
+                _ => None,
+            })
+            .collect();
+        self.devices.retain(|d, _| listed.contains(d));
         self.restore_own_rotation().await?;
         let mut key_replaced = false;
         if let Some(k) = &self.key {
@@ -542,6 +556,7 @@ impl<F: Folder> Replica<F> {
             self.seen.insert(id, foreign);
             return 0;
         };
+        self.senders.insert(from);
         match self.apply(&id, what, from, &plain) {
             Some((meta, changed)) => {
                 self.seen.insert(id, meta);
@@ -666,6 +681,20 @@ impl<F: Folder> Replica<F> {
     pub fn devices(&self) -> Vec<DeviceRecord> {
         let mut all: Vec<_> = self.devices.values().cloned().collect();
         all.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
+        all
+    }
+
+    /// Devices that wrote to the folder under the current key but have no
+    /// record in it, for instance because one was deleted. They can be
+    /// removed like any other.
+    pub fn unlisted_devices(&self) -> Vec<DeviceId> {
+        let mut all: Vec<_> = self
+            .senders
+            .iter()
+            .copied()
+            .filter(|d| *d != self.me.id() && !self.devices.contains_key(d))
+            .collect();
+        all.sort();
         all
     }
 
@@ -797,6 +826,7 @@ impl<F: Folder> Replica<F> {
         }
         self.seen.clear();
         self.devices.clear();
+        self.senders.clear();
         self.leases.clear();
         self.join = JoinState::default();
         self.clear_rotation();
@@ -823,9 +853,10 @@ impl<F: Folder> Replica<F> {
         }
         self.pull().await?;
         let old = self.writable()?;
-        if !self.devices.contains_key(&id) {
+        if !self.devices.contains_key(&id) && !self.senders.contains(&id) {
             return Err(Error::UnknownDevice);
         }
+        self.own_record().await?;
         let stays: BTreeSet<DeviceId> = self.devices.keys().copied().filter(|d| *d != id).collect();
         if stays != keep.iter().copied().collect() {
             return Err(Error::DevicesChanged);
@@ -836,6 +867,37 @@ impl<F: Folder> Replica<F> {
             .filter(|d| d.id != id)
             .cloned()
             .collect();
+        self.rotate(old, keep).await
+    }
+
+    /// Starts a new key for exactly these devices, each of which needs a
+    /// record in the folder, this one included. It works when the device to be
+    /// ended has no record of its own to pick, as when someone deleted it.
+    pub async fn keep_only(&mut self, keep: &[DeviceId]) -> Result<RecoveryCode> {
+        self.writable()?;
+        self.pull().await?;
+        let old = self.writable()?;
+        self.own_record().await?;
+        if !keep.contains(&self.me.id()) {
+            return Err(Error::RemoveSelf);
+        }
+        let mut records = Vec::new();
+        for id in keep.iter().collect::<BTreeSet<_>>() {
+            records.push(self.devices.get(id).ok_or(Error::UnknownDevice)?.clone());
+        }
+        self.rotate(old, records).await
+    }
+
+    /// A rotation wraps the key for the records in the folder, so this
+    /// device's own has to be there.
+    async fn own_record(&mut self) -> Result<()> {
+        if self.devices.contains_key(&self.me.id()) {
+            return Ok(());
+        }
+        self.publish_device().await
+    }
+
+    async fn rotate(&mut self, old: SettingsKey, keep: Vec<DeviceRecord>) -> Result<RecoveryCode> {
         let new = SettingsKey::random(old.epoch.checked_add(1).ok_or(Error::Corrupt)?);
         let wraps: Vec<Wrap> = keep
             .iter()
@@ -868,6 +930,7 @@ impl<F: Folder> Replica<F> {
         self.key = Some(new);
         self.seen.clear();
         self.devices.clear();
+        self.senders.clear();
         self.leases.clear();
         self.seen
             .insert(rotation_id, Meta::Rotation { excludes: false });
