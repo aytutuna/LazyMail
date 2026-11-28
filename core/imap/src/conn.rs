@@ -140,9 +140,7 @@ impl Reply {
     fn absorb(&mut self, r: &Response<'_>) {
         match r {
             Response::Fetch(_, attrs) => self.fetched.extend(parse::fetched(attrs)),
-            Response::Vanished { uids, .. } => {
-                self.vanished.extend(uids.iter().cloned())
-            }
+            Response::Vanished { uids, .. } => self.vanished.extend(uids.iter().cloned()),
             Response::MailboxData(MailboxDatum::Search(v)) => self.search.extend(v),
             Response::MailboxData(MailboxDatum::Exists(n)) => self.exists = Some(*n),
             Response::MailboxData(MailboxDatum::List {

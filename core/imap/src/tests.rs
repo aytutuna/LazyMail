@@ -560,7 +560,8 @@ async fn qresync_names_the_expunged_uids_as_vanished() {
         ))
         .await
         .unwrap();
-    assert_eq!(reply.vanished, [gone..=gone]);
+    assert_eq!(reply.vanished.len(), 1);
+    assert_eq!(reply.vanished[0], gone..=gone);
 }
 
 #[tokio::test]

@@ -110,7 +110,9 @@ impl<T: TokenSource> Imap<T> {
             verified: AtomicBool::new(false),
             sync_lock: tokio::sync::Mutex::new(()),
             connections: Arc::new(tokio::sync::Semaphore::new(limit as usize)),
-            watch_slots: Arc::new(tokio::sync::Semaphore::new((limit as usize).saturating_sub(2))),
+            watch_slots: Arc::new(tokio::sync::Semaphore::new(
+                (limit as usize).saturating_sub(2),
+            )),
         })
     }
 
@@ -180,13 +182,10 @@ impl<T: TokenSource> Imap<T> {
                 }
             }
         };
-        let permit = tokio::time::timeout(
-            PERMIT_WAIT,
-            self.connections.clone().acquire_owned(),
-        )
-        .await
-        .map_err(|_| Error::Busy("every connection of the account is in use".into()))?
-        .expect("the semaphore is never closed");
+        let permit = tokio::time::timeout(PERMIT_WAIT, self.connections.clone().acquire_owned())
+            .await
+            .map_err(|_| Error::Busy("every connection of the account is in use".into()))?
+            .expect("the semaphore is never closed");
         let worked = self.verified.load(Ordering::Relaxed);
         match Connection::open(&self.server, &credential, &self.tls, worked).await {
             Ok(mut conn) => {

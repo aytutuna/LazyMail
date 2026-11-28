@@ -14,6 +14,9 @@ const FLAG_RANGE: u32 = 5000;
 
 /// What to keep. Computers keep every body; phones keep headers for everything and bodies for
 /// the last days only.
+// TODO: attachments are only fetched on demand. Section 8 also wants them fetched ahead on
+// computers until free space is under 10 GB or a size cap is reached, and no sync below 2 GB
+// free; both need a free-space reading per platform.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Policy {
     pub body_days: Option<u32>,

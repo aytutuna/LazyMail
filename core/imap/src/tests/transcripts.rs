@@ -212,7 +212,10 @@ async fn flag_updates_that_arrive_mid_command_are_not_taken_for_answers() {
     let all = rows(&store, &f);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].subject, "Receipt");
-    assert_eq!(all[0].body_text.as_deref().map(str::trim_end), Some("hello box"));
+    assert_eq!(
+        all[0].body_text.as_deref().map(str::trim_end),
+        Some("hello box")
+    );
     drop(conn);
     replay.finish().unwrap();
 }
@@ -321,9 +324,19 @@ async fn a_gmail_message_found_in_no_folder_is_dropped_at_the_end() {
     sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
     sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
     let gm = 1_750_000_000_000_000_011;
-    assert!(store.lock().unwrap().find_by_gm_msgid(gm).unwrap().is_some());
+    assert!(store
+        .lock()
+        .unwrap()
+        .find_by_gm_msgid(gm)
+        .unwrap()
+        .is_some());
     assert_eq!(crate::sync::drop_unplaced(&store).unwrap(), 1);
-    assert!(store.lock().unwrap().find_by_gm_msgid(gm).unwrap().is_none());
+    assert!(store
+        .lock()
+        .unwrap()
+        .find_by_gm_msgid(gm)
+        .unwrap()
+        .is_none());
     drop(conn);
     replay.finish().unwrap();
 }
@@ -540,7 +553,10 @@ async fn a_server_without_move_or_uidplus_copies_then_expunges() {
     let undo = store.lock().unwrap().undo_entries(1001).unwrap();
     let u: crate::MoveUndo = serde_json::from_slice(&undo[0].payload).unwrap();
     assert_eq!(u.rfc_message_id.as_deref(), Some("g1@example.com"));
-    assert_eq!((u.from_uid, u.to_uid, u.to_uidvalidity), (Some(38), None, None));
+    assert_eq!(
+        (u.from_uid, u.to_uid, u.to_uidvalidity),
+        (Some(38), None, None)
+    );
 
     let s = sync_named(&mut conn, &store, "Archive", &Policy::default()).await;
     assert_eq!(s.added, 0);
@@ -636,10 +652,7 @@ async fn mail_announced_before_the_idle_go_ahead_is_not_slept_through() {
     let replay = serve(&script);
     let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
     let end = conn
-        .idle(
-            std::time::Duration::from_secs(30),
-            &crate::Stop::new(),
-        )
+        .idle(std::time::Duration::from_secs(30), &crate::Stop::new())
         .await
         .unwrap();
     assert_eq!(end, crate::conn::IdleEnd::Changed);
