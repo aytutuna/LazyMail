@@ -426,6 +426,7 @@ impl<F: Folder> Replica<F> {
     /// Reads what the other devices wrote. Call it before showing or acting on settings.
     pub async fn pull(&mut self) -> Result<Pulled> {
         let mut changed = 0;
+        let mut rotated = false;
         loop {
             let ids = self.folder.list().await?;
             let live: HashSet<&str> = ids.iter().map(String::as_str).collect();
@@ -468,6 +469,7 @@ impl<F: Folder> Replica<F> {
                 let excludes = accepted.is_none() && self.rotation_ok(&r);
                 self.seen.insert(id, Meta::Rotation { excludes });
                 if let Some(key) = accepted {
+                    rotated = true;
                     self.prev = self.key.replace(key);
                     self.adopted = Some(r.sig);
                     self.own_rotation = None;
@@ -484,6 +486,9 @@ impl<F: Folder> Replica<F> {
             if !switched {
                 break;
             }
+        }
+        if rotated {
+            self.republish_own().await?;
         }
         let listed: HashSet<DeviceId> = self
             .seen
@@ -657,6 +662,25 @@ impl<F: Folder> Replica<F> {
             return false;
         };
         r.epoch == key.epoch && self.adopted != Some(r.sig) && self.proof_opens(prev, r)
+    }
+
+    /// After following a rotation: this device's own settings, in case it
+    /// wrote one under the old key after the rotating device had read the
+    /// folder, which nobody reads any more.
+    async fn republish_own(&mut self) -> Result<()> {
+        let me = self.me.id();
+        let entries: BTreeMap<String, Entry> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.hlc.device == me)
+            .map(|(k, e)| (k.clone(), e.clone()))
+            .collect();
+        if entries.is_empty() || self.writable().is_err() {
+            return Ok(());
+        }
+        self.put(Kind::Snapshot, &Snapshot { entries }, Meta::Snapshot)
+            .await?;
+        Ok(())
     }
 
     /// The device that rotated the key puts its rotation back if someone

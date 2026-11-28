@@ -713,3 +713,23 @@ async fn keep_only_ends_every_device_not_listed() {
     assert_eq!(b.key().unwrap().epoch(), 2);
     assert!(thief.pull().await.unwrap().needs_rejoin);
 }
+
+#[tokio::test]
+async fn a_change_written_after_the_rotation_was_read_is_published_again() {
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    let c = join(&mut a, &folder, "tablet").await;
+    a.pull().await.unwrap();
+    b.pull().await.unwrap();
+    let keep = [a.id(), b.id()];
+    a.remove_device(c.id(), &keep).await.unwrap();
+
+    // The phone has not read the rotation yet and writes under the old key.
+    b.set("late", "x").await.unwrap();
+    b.pull().await.unwrap();
+    a.pull().await.unwrap();
+    assert_eq!(a.get("late"), Some("x"));
+}
