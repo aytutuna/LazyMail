@@ -367,11 +367,11 @@ async fn removing_a_device_rotates_the_key() {
     a.set("theme", "dark").await.unwrap();
 
     assert!(matches!(
-        a.remove_device(a.id()).await,
+        a.remove_device(a.id(), &[]).await,
         Err(Error::RemoveSelf)
     ));
     let before = folder.bodies();
-    let new_code = a.remove_device(c.id()).await.unwrap();
+    let new_code = remove(&mut a, c.id()).await;
     assert_eq!(a.key().unwrap().epoch(), 2);
     // Nothing the old key protected is left in the folder.
     for old in before {
@@ -421,7 +421,7 @@ async fn other_accounts_follow_a_new_key() {
     assert_eq!(acct_b.get("signature"), Some("Best, A"));
 
     a.pull().await.unwrap();
-    a.remove_device(c.id()).await.unwrap();
+    remove(&mut a, c.id()).await;
     acct_a.rekey(a.key().unwrap().clone()).await.unwrap();
     assert!(acct_b.pull().await.unwrap().needs_rejoin);
     b.pull().await.unwrap();
@@ -607,7 +607,7 @@ async fn a_change_written_while_the_key_rotates_is_not_lost() {
     );
     let mut a = Replica::with_key(spy, ida, time.clock(0), a_key);
     a.pull().await.unwrap();
-    a.remove_device(c.id()).await.unwrap();
+    remove(&mut a, c.id()).await;
     assert_eq!(a.get("late"), Some("from the phone"));
     let key = a.key().unwrap().clone();
     let mut a2 = Replica::with_key(folder.clone(), Identity::generate("x"), time.clock(0), key);
@@ -650,4 +650,32 @@ async fn rekeying_another_account_keeps_a_change_made_meanwhile() {
     check.pull().await.unwrap();
     assert_eq!(check.get("late"), Some("x"));
     assert_eq!(check.get("early"), Some("y"));
+}
+
+/// Removes a device after the person has looked at the list of those that stay.
+async fn remove<F: Folder>(
+    a: &mut Replica<F>,
+    who: lazymail_sync::DeviceId,
+) -> lazymail_sync::RecoveryCode {
+    a.pull().await.unwrap();
+    let keep: Vec<_> = a
+        .devices()
+        .iter()
+        .map(|d| d.id)
+        .filter(|d| *d != who)
+        .collect();
+    a.remove_device(who, &keep).await.unwrap()
+}
+
+#[tokio::test]
+async fn removing_refuses_a_list_that_is_out_of_date() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let mut a = first(&folder, &time, "laptop").await;
+    let b = join(&mut a, &folder, &time, "phone", 0).await;
+    let shown = vec![a.id()];
+    let _late = join(&mut a, &folder, &time, "tablet", 0).await;
+    let res = a.remove_device(b.id(), &shown).await;
+    assert!(matches!(res, Err(Error::DevicesChanged)), "{res:?}");
+    assert_eq!(a.key().unwrap().epoch(), 1);
 }

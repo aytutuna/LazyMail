@@ -491,6 +491,9 @@ impl<F: Folder> Replica<F> {
             }
             Kind::Device => {
                 let d: DeviceRecord = serde_json::from_slice(plain).ok()?;
+                if !d.valid() {
+                    return None;
+                }
                 let id = d.id;
                 if self
                     .devices
@@ -552,7 +555,7 @@ impl<F: Folder> Replica<F> {
 
     pub(crate) async fn publish_device(&mut self) -> Result<()> {
         let me = self.me.id();
-        let record = DeviceRecord {
+        let mut record = DeviceRecord {
             id: me,
             name: self.me.name().to_string(),
             x_pub: self.me.x_pub(),
@@ -560,7 +563,9 @@ impl<F: Folder> Replica<F> {
             address: self.reach.0.clone(),
             relay_group: self.reach.1.clone(),
             updated: (self.clock)(),
+            sig: [0; 64],
         };
+        record.sig = self.me.sign(&record.sig_bytes());
         let old: Vec<String> = self
             .seen
             .iter()
@@ -676,7 +681,12 @@ impl<F: Folder> Replica<F> {
     /// Ends a device: the settings key changes for the ones that stay, and
     /// everything the old key protected is deleted. The returned recovery code
     /// replaces the old one. Call `rekey` on the replicas of the other accounts.
-    pub async fn remove_device(&mut self, id: DeviceId) -> Result<RecoveryCode> {
+    ///
+    /// `keep` is the list of devices the person saw and agreed should keep
+    /// access. If the folder now holds a different set, nothing is changed:
+    /// the new key is wrapped for every device in it, so a device someone
+    /// added in the meantime must not slip in unseen.
+    pub async fn remove_device(&mut self, id: DeviceId, keep: &[DeviceId]) -> Result<RecoveryCode> {
         self.writable()?;
         if id == self.me.id() {
             return Err(Error::RemoveSelf);
@@ -685,6 +695,10 @@ impl<F: Folder> Replica<F> {
         let old = self.writable()?;
         if !self.devices.contains_key(&id) {
             return Err(Error::UnknownDevice);
+        }
+        let stays: BTreeSet<DeviceId> = self.devices.keys().copied().filter(|d| *d != id).collect();
+        if stays != keep.iter().copied().collect() {
+            return Err(Error::DevicesChanged);
         }
         let keep: Vec<DeviceRecord> = self
             .devices

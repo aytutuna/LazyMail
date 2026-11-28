@@ -42,6 +42,8 @@ mod identity;
 mod join;
 mod lease;
 mod replica;
+#[cfg(test)]
+mod tests;
 mod wire;
 
 pub use crypto::{RecoveryCode, SettingsKey};
@@ -80,6 +82,8 @@ pub enum Error {
     AlreadyJoined,
     #[error("that device has not approved yet")]
     NoApproval,
+    #[error("the devices in the folder are not the ones that were shown")]
+    DevicesChanged,
     #[error("a message could not be read")]
     Corrupt,
 }

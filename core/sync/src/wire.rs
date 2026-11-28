@@ -97,6 +97,44 @@ pub struct DeviceRecord {
     pub address: Option<String>,
     pub relay_group: Option<String>,
     pub updated: u64,
+    /// By the device's own key, so only that device can write its record.
+    #[serde(with = "b64")]
+    pub sig: [u8; 64],
+}
+
+fn field(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn opt_field(buf: &mut Vec<u8>, s: &Option<String>) {
+    match s {
+        Some(s) => {
+            buf.push(1);
+            field(buf, s.as_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
+impl DeviceRecord {
+    pub(crate) fn sig_bytes(&self) -> Vec<u8> {
+        let mut b = b"lazymail device record v1".to_vec();
+        b.extend_from_slice(&self.id.0);
+        b.extend_from_slice(&self.x_pub);
+        b.extend_from_slice(&self.ed_pub);
+        field(&mut b, self.name.as_bytes());
+        opt_field(&mut b, &self.address);
+        opt_field(&mut b, &self.relay_group);
+        b.extend_from_slice(&self.updated.to_le_bytes());
+        b
+    }
+
+    /// The id belongs to the keys and the keys signed the record.
+    pub(crate) fn valid(&self) -> bool {
+        self.id == DeviceId::from_keys(&self.x_pub, &self.ed_pub)
+            && verify(&self.ed_pub, &self.sig_bytes(), &self.sig)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
