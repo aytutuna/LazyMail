@@ -330,9 +330,11 @@ mod tests {
     fn non_ascii_headers_are_encoded() {
         let mut d = draft();
         d.subject = "Grüße".into();
+        d.text = Some("Grüße".into());
         let t = text(&build(&d).unwrap());
         assert!(t.contains("Subject: =?utf-8?"), "{t}");
-        assert!(t.is_ascii() || t.contains("Content-Transfer-Encoding"));
+        assert!(t.is_ascii(), "{t}");
+        assert!(t.contains("Content-Transfer-Encoding: "), "{t}");
     }
 
     #[test]
