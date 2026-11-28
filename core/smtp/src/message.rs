@@ -1,4 +1,5 @@
 use mail_builder::headers::address::Address as HeaderAddress;
+use mail_builder::mime::MimePart;
 use mail_builder::MessageBuilder;
 
 use crate::Error;
@@ -117,28 +118,54 @@ pub fn build(draft: &Draft) -> Result<Built, Error> {
     if !draft.references.is_empty() {
         m = m.references(draft.references.clone());
     }
-    if let Some(t) = &draft.text {
-        m = m.text_body(t.as_str());
-    }
-    if let Some(h) = &draft.html {
-        m = m.html_body(h.as_str());
-    }
-    for a in &draft.attachments {
-        m = m.attachment(
-            a.content_type.as_str(),
-            a.filename.as_str(),
-            a.data.as_slice(),
-        );
-    }
-    for i in &draft.inline {
-        m = m.inline(i.content_type.as_str(), i.cid.as_str(), i.data.as_slice());
-    }
+    m = m.body(body(draft));
     Ok(Built {
         message_id: format!("<{id}>"),
         raw: m
             .write_to_vec()
             .map_err(|_| Error::Draft("cannot write the message"))?,
     })
+}
+
+/// mixed[ related[ alternative[text, html], inline images ], attachments ], leaving out the
+/// levels the draft does not need. mail-builder's own inline() puts images next to the
+/// attachments, where mail clients do not resolve cid: links.
+fn body(draft: &Draft) -> MimePart<'_> {
+    let text = draft
+        .text
+        .as_ref()
+        .map(|t| MimePart::new("text/plain", t.as_str()));
+    let html = draft
+        .html
+        .as_ref()
+        .map(|h| MimePart::new("text/html", h.as_str()));
+    let mut part = match (text, html) {
+        (Some(t), Some(h)) => MimePart::new("multipart/alternative", vec![t, h]),
+        (Some(p), None) | (None, Some(p)) => p,
+        (None, None) => unreachable!("build refuses a draft without a body"),
+    };
+    if !draft.inline.is_empty() {
+        let mut parts = vec![part];
+        for i in &draft.inline {
+            parts.push(
+                MimePart::new(i.content_type.as_str(), i.data.as_slice())
+                    .inline()
+                    .cid(i.cid.as_str()),
+            );
+        }
+        part = MimePart::new("multipart/related", parts);
+    }
+    if !draft.attachments.is_empty() {
+        let mut parts = vec![part];
+        for a in &draft.attachments {
+            parts.push(
+                MimePart::new(a.content_type.as_str(), a.data.as_slice())
+                    .attachment(a.filename.as_str()),
+            );
+        }
+        part = MimePart::new("multipart/mixed", parts);
+    }
+    part
 }
 
 fn new_message_id(from: &str) -> Result<String, Error> {
@@ -233,11 +260,39 @@ mod tests {
             content_type: "image/png".into(),
             data: vec![1, 2, 3],
         });
-        let t = text(&build(&d).unwrap());
-        assert!(t.contains("multipart/mixed"), "{t}");
+        let b = build(&d).unwrap();
+        let t = text(&b);
         assert!(t.contains("filename=\"a.pdf\""), "{t}");
         assert!(t.contains("Content-ID: <logo>"), "{t}");
         assert!(t.contains("Content-Disposition: inline"), "{t}");
+        assert_eq!(shape(&b), "mixed(related(alternative(plain,html),png),pdf)");
+
+        d.attachments.clear();
+        assert_eq!(
+            shape(&build(&d).unwrap()),
+            "related(alternative(plain,html),png)"
+        );
+        d.inline.clear();
+        assert_eq!(shape(&build(&d).unwrap()), "alternative(plain,html)");
+        d.html = None;
+        assert_eq!(shape(&build(&d).unwrap()), "plain");
+    }
+
+    fn shape(b: &Built) -> String {
+        fn walk(part: mail_parser::MessagePart) -> String {
+            let name = part
+                .content_type()
+                .and_then(|c| c.subtype().map(String::from));
+            let name = name.unwrap_or_else(|| "?".into());
+            if part.is_multipart() {
+                let kids: Vec<_> = part.children().map(walk).collect();
+                format!("{name}({})", kids.join(","))
+            } else {
+                name
+            }
+        }
+        let msg = mail_parser::MessageParser::default().parse(&b.raw).unwrap();
+        walk(msg.part(0).unwrap())
     }
 
     #[test]
