@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,6 +119,24 @@ fn expand(set: &[UidSetMember]) -> Vec<u32> {
 }
 
 impl Reply {
+    /// The FETCH data of the messages that were asked for, merged per UID. Responses for other
+    /// messages (another client's flag change announced mid-command) are left out.
+    pub(crate) fn fetched_for(self, uids: &[u32]) -> HashMap<u32, Fetched> {
+        let mut out: HashMap<u32, Fetched> = HashMap::new();
+        for f in self.fetched {
+            if !uids.contains(&f.uid) {
+                continue;
+            }
+            match out.get_mut(&f.uid) {
+                Some(have) => have.merge(f),
+                None => {
+                    out.insert(f.uid, f);
+                }
+            }
+        }
+        out
+    }
+
     fn absorb(&mut self, r: &Response<'_>) {
         match r {
             Response::Fetch(_, attrs) => self.fetched.extend(parse::fetched(attrs)),

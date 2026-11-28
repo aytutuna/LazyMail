@@ -149,16 +149,22 @@ async fn gmail_keeps_all_mail_spam_and_trash_only() {
 }
 
 fn all_mail_script(extra: &str) -> String {
+    all_mail_script_with(extra, "", "")
+}
+
+// `before` goes ahead of the header reply and `after` behind the body reply, as the server
+// would send them when another client changes flags meanwhile.
+fn all_mail_script_with(extra: &str, before: &str, after: &str) -> String {
     let labels = r#"X-GM-MSGID 1750000000000000011 X-GM-LABELS ("\\Inbox" Receipts "&AOQ-ssig")"#;
     format!(
         "{}{}C: <tag> UID SEARCH ALL\n\
          S: * SEARCH 1\n\
          S: <tag> OK Success\n\
          C: <tag> UID FETCH 1 {HEADER_FETCH_ITEMS}\n\
-         {}\n\
+         {before}{}\n\
          S: <tag> OK Success\n\
          C: <tag> UID FETCH 1 (BODY.PEEK[1.MIME] BODY.PEEK[1] BODY.PEEK[HEADER])\n\
-         {}\n\
+         {}\n{after}\
          S: <tag> OK Success\n{extra}",
         login(GMAIL_CAPS),
         select("[Gmail]/All Mail", 5, 1, 2, 1873),
@@ -185,6 +191,28 @@ async fn gmail_rows_are_keyed_by_msgid_with_their_labels() {
     assert_eq!(m.body_text.as_deref().map(str::trim_end), Some("hello box"));
     assert_eq!(f.sync.highestmodseq, Some(1873));
     assert_eq!(f.sync.uidnext, Some(2));
+    drop(conn);
+    replay.finish().unwrap();
+}
+
+#[tokio::test]
+async fn flag_updates_that_arrive_mid_command_are_not_taken_for_answers() {
+    // Another client marks UID 7 read while the headers load, and UID 1 while its body loads.
+    let script = all_mail_script_with(
+        "",
+        "S: * 3 FETCH (UID 7 FLAGS (\\Seen))\n",
+        "S: * 1 FETCH (UID 1 FLAGS (\\Seen \\Flagged))\n",
+    );
+    let replay = serve(&script);
+    let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
+    let (_dir, store) = store();
+    let s = sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
+    assert_eq!(s.added, 1);
+    let f = store.lock().unwrap().folders().unwrap().remove(0);
+    let all = rows(&store, &f);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].subject, "Receipt");
+    assert_eq!(all[0].body_text.as_deref().map(str::trim_end), Some("hello box"));
     drop(conn);
     replay.finish().unwrap();
 }

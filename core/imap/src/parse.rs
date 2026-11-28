@@ -35,6 +35,16 @@ pub(crate) struct Fetched {
 }
 
 impl Fetched {
+    /// Adds what another response for the same message carried; a server may split one
+    /// message's data over several FETCH responses.
+    pub(crate) fn merge(&mut self, o: Fetched) {
+        macro_rules! take {
+            ($($f:ident),*) => { $(if o.$f.is_some() { self.$f = o.$f; })* };
+        }
+        take!(flags, modseq, size, date, header, layout, gm_msgid, labels);
+        self.sections.extend(o.sections);
+    }
+
     /// The header block and the raw body of a part. A message that is not multipart has no
     /// MIME header of its own for part 1 on some servers; its message header stands in.
     pub(crate) fn part(&self, path: &[u32]) -> Option<(&[u8], &[u8])> {

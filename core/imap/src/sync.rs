@@ -225,12 +225,12 @@ pub(crate) async fn sync_folder(
                     extra_items(gmail)
                 ))
                 .await?;
-            let got = reply.fetched;
+            let mut got = reply.fetched_for(chunk);
             let s = store.lock().unwrap();
             let added = s.atomic(|s| {
                 let mut added = 0;
-                for f in &got {
-                    if let Some(p) = insert_header(s, folder.id, f)? {
+                for f in chunk.iter().filter_map(|u| got.remove(u)) {
+                    if let Some(p) = insert_header(s, folder.id, &f)? {
                         pending.push(p);
                         added += 1;
                     }
@@ -295,6 +295,9 @@ fn insert_header(
     folder_id: i64,
     f: &Fetched,
 ) -> lazymail_store::Result<Option<Pending>> {
+    if f.header.is_none() {
+        return Ok(None);
+    }
     if let Some(gm) = f.gm_msgid {
         if let Some(id) = store.find_by_gm_msgid(gm)? {
             store.move_message(id, folder_id, Some(f.uid))?;
@@ -396,9 +399,9 @@ async fn fetch_bodies(
         let reply = conn
             .exec(&format!("UID FETCH {} (BODYSTRUCTURE)", uid_set(chunk)))
             .await?;
-        for f in reply.fetched {
+        for (uid, f) in reply.fetched_for(chunk) {
             if let Some(l) = f.layout {
-                layouts.insert(f.uid, l);
+                layouts.insert(uid, l);
             }
         }
     }
@@ -431,11 +434,15 @@ async fn fetch_bodies(
                 let reply = conn
                     .exec(&format!("UID FETCH {} ({})", uid_set(&uids), items))
                     .await?;
-                got = reply.fetched.into_iter().map(|f| (f.uid, f)).collect();
+                got = reply.fetched_for(&uids);
             }
             let s = store.lock().unwrap();
             s.atomic(|s| {
                 for p in chunk {
+                    if !parts.is_empty() && !got.contains_key(&p.uid) {
+                        // No data came back for it; it stays without a body for the next run.
+                        continue;
+                    }
                     let text = join_parts(got.get(&p.uid), &plain);
                     let page = join_parts(got.get(&p.uid), &html);
                     s.set_bodies(
@@ -469,7 +476,7 @@ fn join_parts(f: Option<&Fetched>, parts: &[String]) -> String {
     out
 }
 
-/// The part of a message on demand: its decoded bytes and the name it was sent under.
+/// The decoded bytes of one part of a message, fetched on demand.
 pub(crate) async fn fetch_part(
     conn: &mut Connection,
     folder: &str,
@@ -484,10 +491,9 @@ pub(crate) async fn fetch_part(
         ))
         .await?;
     let path = parse::part_path(part);
-    let got = reply.fetched;
+    let got = reply.fetched_for(&[uid]);
     let f = got
-        .iter()
-        .find(|f| f.uid == uid)
+        .get(&uid)
         .ok_or_else(|| crate::Error::Protocol("the message is gone".into()))?;
     let Some((mime, body)) = f.part(&path) else {
         return Err(crate::Error::Protocol("the part is missing".into()));
