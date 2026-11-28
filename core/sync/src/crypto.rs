@@ -224,9 +224,10 @@ pub(crate) fn commit_to(secret: &[u8; 16]) -> [u8; 32] {
         .into()
 }
 
-/// Four digits both screens show. The new device's secret was committed to
-/// before the approver's share existed, so neither side can steer the result;
-/// they match only if both saw the same keys and the same request.
+/// Four digits both screens show. The new device's secret is committed to
+/// before any approver's share exists, and it is published only after the
+/// offers it will be used with are fixed, so nobody can pick a share to fit
+/// a code; the two match only if both saw the same keys and the same request.
 pub(crate) fn join_code(
     secret: &[u8; 16],
     anonce: &[u8; 16],

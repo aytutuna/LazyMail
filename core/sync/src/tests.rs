@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::replica::Meta;
-use crate::wire::{DeviceRecord, JoinRequest, JoinReveal, Kind, Wire};
+use crate::wire::{DeviceRecord, JoinOffer, JoinRequest, JoinReveal, Kind, Wire};
 use crate::{Clock, Folder, Identity, MemoryFolder, Replica};
 
 type R = Replica<MemoryFolder>;
@@ -435,4 +435,92 @@ async fn a_stamp_far_ahead_or_at_the_counter_limit_does_not_pin_a_key() {
     a.set("k", "latest").await.unwrap();
     assert_eq!(a.get("k"), Some("latest"));
     assert_ne!(a.get("k"), Some("pinned 18446744073709551615 0"));
+}
+
+fn offer_from(who: &Identity, nonce: [u8; 16], commit: [u8; 32], anonce: u8) -> Wire {
+    let mut o = JoinOffer {
+        nonce,
+        commit,
+        anonce: [anonce; 16],
+        from: who.id(),
+        name: who.name().to_string(),
+        x_pub: who.x_pub(),
+        ed_pub: who.ed_pub(),
+        sig: [0; 64],
+    };
+    o.sig = who.sign(&o.sig_bytes());
+    Wire::Offer(o)
+}
+
+#[tokio::test]
+async fn an_offer_after_the_secret_is_public_is_ignored() {
+    let folder = MemoryFolder::new();
+    let (mut host, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut new = Replica::new(folder.clone(), Identity::generate("phone"), clock());
+    new.request_join().await.unwrap();
+    host.pull().await.unwrap();
+    let nonce = host.join_requests()[0].nonce;
+    host.offer_join(nonce).await.unwrap();
+    new.pull().await.unwrap();
+    assert_eq!(new.join_offers().len(), 1);
+
+    let commit = new.join.pending.as_ref().unwrap().commit;
+    let late = Identity::generate("laptop");
+    put_wire(&folder, &offer_from(&late, nonce, commit, 5)).await;
+    new.pull().await.unwrap();
+    let offers = new.join_offers();
+    assert_eq!(offers.len(), 1);
+    assert_eq!(offers[0].device, host.id());
+}
+
+#[tokio::test]
+async fn deleting_the_request_does_not_let_an_offer_be_fitted_to_the_secret() {
+    let folder = MemoryFolder::new();
+    let mut new = Replica::new(folder.clone(), Identity::generate("phone"), clock());
+    new.request_join().await.unwrap();
+    take(&folder, |w| matches!(w, Wire::Join(_)).then_some(())).await;
+    let commit = new.join.pending.as_ref().unwrap().commit;
+    let nonce = new.join.pending.as_ref().unwrap().nonce;
+
+    // A dummy offer makes the phone publish its secret; once that is in the
+    // folder, offers built from it are not listed.
+    let dummy = Identity::generate("laptop");
+    put_wire(&folder, &offer_from(&dummy, nonce, commit, 1)).await;
+    new.pull().await.unwrap();
+    assert!(new.join.pending.as_ref().unwrap().revealed.is_some());
+    let ground = Identity::generate("laptop");
+    put_wire(&folder, &offer_from(&ground, nonce, commit, 2)).await;
+    new.pull().await.unwrap();
+    let offers = new.join_offers();
+    assert_eq!(offers.len(), 1);
+    assert_eq!(offers[0].device, dummy.id());
+}
+
+#[tokio::test]
+async fn unchecked_reveals_and_approvals_are_not_kept() {
+    let folder = MemoryFolder::new();
+    let (mut host, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut new = Replica::new(folder.clone(), Identity::generate("phone"), clock());
+    new.request_join().await.unwrap();
+    host.pull().await.unwrap();
+    let nonce = host.join_requests()[0].nonce;
+    for i in 0..100u8 {
+        put_wire(
+            &folder,
+            &Wire::Reveal(JoinReveal {
+                nonce,
+                secret: [i; 16],
+            }),
+        )
+        .await;
+    }
+    host.offer_join(nonce).await.unwrap();
+    new.pull().await.unwrap();
+    host.pull().await.unwrap();
+    assert!(host.join.reveals.len() <= 1);
+    assert!(host.join_code(nonce).is_ok());
 }

@@ -14,13 +14,13 @@
 //! id, so nobody can write another device's record.
 //!
 //! Joining: the new device commits to a secret in its request. A device that
-//! offers adds a random value of its own, and only then does the new device
-//! publish the secret. Both show a 4-digit code made from the secret, the
-//! random value, the request and all four public keys; the approver types the
-//! new device's code, and the new device takes a key only from the approver
-//! whose code the person typed, and only after finding that approver's signed
-//! device record under it. The commitment stops anyone from picking a request
-//! to fit a code, and approvals are signed against the offer they answer.
+//! offers adds a random value of its own, and the new device then publishes
+//! the secret and takes no further offers; a later one needs a new request.
+//! Both show a 4-digit code made from the secret, the random value, the
+//! request and all four public keys. The approver types the new device's
+//! code, and the new device takes a key only from the approver whose code the
+//! person typed. The code is the only thing that vouches for the key, since
+//! anyone with the mailbox can write anything else into the folder.
 //!
 //! Removing a device wraps a new key for the devices the person was shown and
 //! deletes everything the old key protected. A printed recovery code unwraps

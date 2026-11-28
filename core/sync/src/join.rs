@@ -37,7 +37,8 @@ pub(crate) struct JoinState {
     /// Requests seen in the folder.
     pub requests: HashMap<[u8; 16], Seen>,
     pub pending: Option<Pending>,
-    pub offers: Vec<JoinOffer>,
+    /// Offers held when the secret was published, with their message ids.
+    pub offers: Vec<(JoinOffer, String)>,
     pub approvals: Vec<(Approval, String)>,
     /// Secrets other devices published for a request. Checked against the
     /// request's commitment where they are used.
@@ -89,37 +90,49 @@ impl<F: Folder> Replica<F> {
                     if o.from == self.me.id() {
                         self.join.offered.insert(o.nonce, o.anonce);
                     } else if self.join.offers.len() < MAX_OFFERS
-                        && self
-                            .join
-                            .pending
-                            .as_ref()
-                            .is_some_and(|p| p.nonce == o.nonce && p.commit == o.commit)
-                        && !self.join.offers.iter().any(|x| x.from == o.from)
+                        && self.join.pending.as_ref().is_some_and(|p| {
+                            p.revealed.is_none() && p.nonce == o.nonce && p.commit == o.commit
+                        })
+                        && !self.join.offers.iter().any(|(x, _)| x.from == o.from)
                     {
-                        self.join.offers.push(o);
+                        self.join.offers.push((o, id.clone()));
                     }
                 }
                 Meta::Offer { nonce }
             }
             Wire::Approval(a) => {
                 let mine = self.join.pending.as_ref().map(|p| p.nonce) == Some(a.nonce)
-                    && a.to == self.me.id();
+                    && a.to == self.me.id()
+                    && self.join.offers.iter().any(|(o, _)| {
+                        o.from == a.from
+                            && o.anonce == a.anonce
+                            && verify(&o.ed_pub, &a.sig_bytes(), &a.sig)
+                    });
                 if mine
                     && self.join.approvals.len() < MAX_APPROVALS
                     && !self.join.approvals.iter().any(|(_, i)| *i == id)
                 {
                     self.join.approvals.push((a, id.clone()));
                 }
-                Meta::Approval
+                if mine {
+                    Meta::Approval
+                } else {
+                    Meta::Junk
+                }
             }
             Wire::Reveal(r) => {
                 let nonce = r.nonce;
-                if self.join.reveals.len() < MAX_REVEALS
-                    && !self.join.reveals.iter().any(|(_, i)| *i == id)
-                {
+                let held = self
+                    .join
+                    .requests
+                    .get(&nonce)
+                    .is_some_and(|s| commit_to(&r.secret) == s.request.commit);
+                if held && self.join.reveals.len() < MAX_REVEALS {
                     self.join.reveals.push((r, id.clone()));
+                    Meta::Reveal { nonce }
+                } else {
+                    Meta::Junk
                 }
-                Meta::Reveal { nonce }
             }
             _ => unreachable!("only join messages come here"),
         };
@@ -166,7 +179,10 @@ impl<F: Folder> Replica<F> {
     }
 
     /// Publishes the secret behind the request's commitment once a device has
-    /// offered. Before that nobody could have chosen a value to match it.
+    /// offered. Before that nobody could have chosen a value to match it, and
+    /// from then on offers are ignored: with the secret public, anyone could
+    /// grind an offer whose code is whatever they need. A device that offers
+    /// later has to be asked again with a new request.
     pub(crate) async fn reveal_to_offers(&mut self) -> Result<()> {
         let Some(p) = &self.join.pending else {
             return Ok(());
@@ -207,7 +223,7 @@ impl<F: Folder> Replica<F> {
         self.join
             .offers
             .iter()
-            .map(|o| JoinOffered {
+            .map(|(o, _)| JoinOffered {
                 device: o.from,
                 name: o.name.clone(),
                 code: self.offer_code(p, o),
@@ -370,14 +386,15 @@ impl<F: Folder> Replica<F> {
             .join
             .offers
             .iter()
-            .find(|o| o.from == approver)
+            .find(|(o, _)| o.from == approver)
             .ok_or(Error::NoOffer)?
+            .0
             .clone();
         let codes: Vec<(DeviceId, String)> = self
             .join
             .offers
             .iter()
-            .map(|o| (o.from, self.offer_code(p, o)))
+            .map(|(o, _)| (o.from, self.offer_code(p, o)))
             .collect();
         let shown = shown.trim();
         let matching: Vec<DeviceId> = codes
@@ -417,17 +434,14 @@ impl<F: Folder> Replica<F> {
         let epoch = key.epoch;
         self.set_key(key);
         self.pull().await?;
-        // A real approver wrote its own record under this key, and nothing
-        // newer is in the folder. A key someone made up has neither.
-        let known = self
-            .devices
-            .get(&approver)
-            .is_some_and(|d| d.x_pub == offer.x_pub && d.ed_pub == offer.ed_pub);
+        // Nothing in the folder can vouch for a key a person confirmed by
+        // code, since anyone with the mailbox can write there. This only
+        // catches a key that has already been replaced.
         let newer = self
             .seen
             .values()
             .any(|m| matches!(m, Meta::Foreign { epoch: e, .. } if *e > epoch));
-        if !known || newer {
+        if newer {
             self.forget_key();
             return Err(Error::UntrustedKey);
         }
