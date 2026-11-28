@@ -26,6 +26,24 @@ jobs:
         run: cargo test
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  core-servers:
+    # dovecot.conf.in is the 2.3 format; 24.04 still ships 2.3
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Dovecot
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dovecot-core dovecot-imapd
+      - name: Test against the servers
+        run: |
+          testdata/servers/start.sh > "$RUNNER_TEMP/servers.env"
+          . "$RUNNER_TEMP/servers.env"
+          cargo test --workspace -- --include-ignored
+      - name: Stop the servers
+        if: always()
+        run: testdata/servers/stop.sh
+
   windows:
     runs-on: windows-latest
     env:

@@ -1,0 +1,28 @@
+# Written from Apple's public notes on iCloud Mail settings, not recorded from a real account.
+# iCloud needs an app-specific password; the greeting and ID response are typical, not exact.
+S: * OK [CAPABILITY IMAP4rev1 AUTH=PLAIN ID IDLE NAMESPACE UIDPLUS LITERAL+ MOVE] iCloud IMAP ready
+C: <tag> ID ("name" "lazymail")
+S: * ID ("name" "iCloud Mail")
+S: <tag> OK ID completed.
+C: <tag> LOGIN "user@icloud.example" "abcd-efgh-ijkl-mnop"
+S: <tag> OK LOGIN completed.
+C: <tag> LIST "" "*"
+S: * LIST (\HasNoChildren) "/" "INBOX"
+S: * LIST (\HasNoChildren \Sent) "/" "Sent Messages"
+S: * LIST (\HasNoChildren \Drafts) "/" "Drafts"
+S: * LIST (\HasNoChildren \Trash) "/" "Deleted Messages"
+S: * LIST (\HasNoChildren \Junk) "/" "Junk"
+S: * LIST (\HasNoChildren \Archive) "/" "Archive"
+S: <tag> OK LIST completed.
+C: <tag> SELECT INBOX
+S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+S: * OK [PERMANENTFLAGS (\Answered \Flagged \Deleted \Seen \Draft \*)] Flags permitted.
+S: * 4 EXISTS
+S: * 0 RECENT
+S: * OK [UIDVALIDITY 3] UIDs valid
+S: * OK [UIDNEXT 13] Predicted next UID
+S: <tag> OK [READ-WRITE] SELECT completed.
+C: <tag> UID MOVE 12 Archive
+S: * OK [COPYUID 3 12 5] Copied
+S: * 4 EXPUNGE
+S: <tag> OK UID MOVE completed.

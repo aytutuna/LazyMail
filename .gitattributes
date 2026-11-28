@@ -1,2 +1,5 @@
 # Shell scripts run in Git Bash on Windows too, which stops at a carriage return.
 *.sh text eol=lf
+# Fixtures and server configs are read by Linux tools; a carriage return would end up in passwords.
+testdata/servers/** text eol=lf
+testdata/imap/*.txt text eol=lf
