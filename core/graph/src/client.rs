@@ -114,7 +114,7 @@ impl<T: TokenSource> Graph<T> {
             let status = resp.status();
             if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE
             {
-                let wait = retry_after(&resp);
+                let wait = retry_after(&resp).unwrap_or(Duration::from_secs(5 << attempt));
                 if attempt >= RETRIES || wait > MAX_WAIT {
                     return Err(Error::Throttled(wait));
                 }
@@ -158,12 +158,12 @@ async fn check(resp: Response) -> Result<Response> {
     })
 }
 
-fn retry_after(resp: &Response) -> Duration {
+fn retry_after(resp: &Response) -> Option<Duration> {
     resp.headers()
         .get(RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .map_or(Duration::from_secs(5), Duration::from_secs)
+        .map(Duration::from_secs)
 }
 
 fn tls_config() -> ClientConfig {

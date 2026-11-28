@@ -421,6 +421,21 @@ async fn throttling_waits_for_retry_after_and_tries_again() {
 }
 
 #[tokio::test]
+async fn retry_after_is_waited_out() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/delta"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+        .up_to_n_times(1)
+        .mount(&e.server)
+        .await;
+    e.mailbox().await;
+    let start = std::time::Instant::now();
+    e.graph.sync_folders(&e.store).await.unwrap();
+    assert!(start.elapsed() >= Duration::from_secs(1));
+}
+
+#[tokio::test]
 async fn a_long_retry_after_goes_back_to_the_caller() {
     let e = env().await;
     Mock::given(method("GET"))
