@@ -863,3 +863,17 @@ async fn a_moved_message_that_never_shows_up_in_its_new_folder_is_dropped() {
     drop(conn);
     replay.finish().unwrap();
 }
+
+#[tokio::test]
+async fn a_server_that_stops_answering_during_sign_in_times_out() {
+    let script = "S: * OK server ready\n\
+                  C: <tag> LOGIN \"u\" \"pw\"\n\
+                  C: <tag> never answered\n";
+    let replay = serve(script);
+    let err = open(&replay, Provider::Other, false).await.err().unwrap();
+    assert!(
+        matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::TimedOut),
+        "{err:?}"
+    );
+    drop(replay);
+}

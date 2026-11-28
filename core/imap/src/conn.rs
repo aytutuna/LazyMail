@@ -17,6 +17,9 @@ use crate::stream::{self, Stream};
 use crate::utf7;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// Everything from the first packet to the end of the sign-in, so a server that stalls
+/// halfway cannot hold one of the account's connections for good.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 90 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -220,6 +223,20 @@ impl Connection {
     /// Connects, secures the channel and signs in. `worked_before` says whether this account
     /// has signed in successfully already, which changes how a refusal is read.
     pub async fn open(
+        server: &Server,
+        credential: &Credential,
+        tls: &Arc<ClientConfig>,
+        worked_before: bool,
+    ) -> Result<Connection> {
+        tokio::time::timeout(
+            OPEN_TIMEOUT,
+            Self::sign_in(server, credential, tls, worked_before),
+        )
+        .await
+        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
+    }
+
+    async fn sign_in(
         server: &Server,
         credential: &Credential,
         tls: &Arc<ClientConfig>,

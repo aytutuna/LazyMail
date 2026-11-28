@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
+use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
@@ -25,6 +26,12 @@ pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
         .await
         .map_err(|_| Error::Io(io::ErrorKind::TimedOut.into()))??;
     tcp.set_nodelay(true)?;
+    // A connection that dies silently (a network change, a NAT that forgot it) is noticed
+    // by the system instead of being waited on.
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(20));
+    SockRef::from(&tcp).set_tcp_keepalive(&keepalive)?;
     Ok(tcp)
 }
 
