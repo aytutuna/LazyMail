@@ -142,16 +142,61 @@ impl<F: Folder> Replica<F> {
     /// Like `set_key`, and moves what the folder holds under the new key. Done
     /// by the device that rotated the key.
     pub async fn rekey(&mut self, key: SettingsKey) -> Result<()> {
-        if self.key.is_some() {
-            self.pull().await?;
-        }
-        let stale = self.folder.list().await?;
+        self.pull().await?;
+        let old = self.key.clone();
+        let stale: Vec<String> = self.seen.keys().cloned().collect();
         self.set_key(key);
         self.put_snapshot().await?;
-        for id in stale {
-            self.folder.delete(&id).await?;
+        if let Some(old) = old {
+            self.absorb_late(&old, &stale).await?;
         }
-        Ok(())
+        self.delete_all(&stale).await
+    }
+
+    /// Messages another device added under the old key after this device
+    /// last read the folder. Their settings are folded into a new snapshot
+    /// instead of being deleted unread.
+    async fn absorb_late(&mut self, old: &SettingsKey, read: &[String]) -> Result<()> {
+        let mut late = Vec::new();
+        let mut merged = false;
+        for id in self.folder.list().await? {
+            if read.contains(&id) || self.seen.contains_key(&id) {
+                continue;
+            }
+            let Some(body) = self.folder.fetch(&id).await? else {
+                continue;
+            };
+            let Ok(Wire::Sealed {
+                what,
+                epoch,
+                from,
+                data,
+            }) = serde_json::from_slice(&body)
+            else {
+                continue;
+            };
+            if epoch != old.epoch {
+                continue;
+            }
+            let Ok(plain) = open(&old.bytes, &what.aad(epoch, from), &data) else {
+                continue;
+            };
+            if matches!(what, Kind::Change | Kind::Snapshot) {
+                merged |= self.apply(what, &plain).is_some();
+            }
+            late.push(id);
+        }
+        if merged {
+            let prev: Vec<String> = self
+                .seen
+                .iter()
+                .filter(|(_, m)| matches!(m, Meta::Snapshot))
+                .map(|(id, _)| id.clone())
+                .collect();
+            self.put_snapshot().await?;
+            self.delete_all(&prev).await?;
+        }
+        self.delete_all(&late).await
     }
 
     pub(crate) fn writable(&self) -> Result<SettingsKey> {
@@ -554,6 +599,7 @@ impl<F: Folder> Replica<F> {
     /// Replaces the recovery code, for when the printed one is lost.
     pub async fn reissue_recovery(&mut self) -> Result<RecoveryCode> {
         self.writable()?;
+        self.pull().await?;
         self.write_recovery().await
     }
 
@@ -679,6 +725,7 @@ impl<F: Folder> Replica<F> {
         }
         self.put_snapshot().await?;
         let code = self.write_recovery().await?;
+        self.absorb_late(&old, &stale).await?;
         for id in stale {
             self.folder.delete(&id).await?;
         }

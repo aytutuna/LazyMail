@@ -1,10 +1,13 @@
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use lazymail_sync::{
-    scheduled_message_id, Clock, Error, Folder, Identity, MemoryFolder, Replica, COMPACT_AT,
-    LEASE_MS, MAIN_DEVICE,
+    scheduled_message_id, Clock, Error, Folder, Identity, MemoryFolder, Replica, SettingsKey,
+    COMPACT_AT, LEASE_MS, MAIN_DEVICE,
 };
 
 type R = Replica<MemoryFolder>;
@@ -509,4 +512,142 @@ fn scheduled_message_ids_are_fixed() {
     assert_eq!(id, scheduled_message_id("item-1", "alazy.app"));
     assert_ne!(id, scheduled_message_id("item-2", "alazy.app"));
     assert!(id.starts_with('<') && id.ends_with("@alazy.app>"));
+}
+
+/// Runs a folder call to the end; the memory folder never waits.
+fn block_on<T>(f: impl Future<Output = T>) -> T {
+    let mut f = pin!(f);
+    let mut cx = Context::from_waker(Waker::noop());
+    match f.as_mut().poll(&mut cx) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("memory folder did not finish"),
+    }
+}
+
+type Hook = Box<dyn FnOnce() + Send>;
+
+/// A folder that lets another device write right after the first message
+/// containing `marker` is appended, the way a real mailbox is shared.
+#[derive(Clone)]
+struct Spy {
+    inner: MemoryFolder,
+    marker: &'static str,
+    hook: Arc<Mutex<Option<Hook>>>,
+}
+
+impl Spy {
+    fn new(inner: &MemoryFolder, marker: &'static str, hook: Hook) -> Self {
+        Spy {
+            inner: inner.clone(),
+            marker,
+            hook: Arc::new(Mutex::new(Some(hook))),
+        }
+    }
+}
+
+impl Folder for Spy {
+    async fn list(&self) -> Result<Vec<String>, Error> {
+        self.inner.list().await
+    }
+
+    async fn fetch(&self, id: &str) -> Result<Option<Vec<u8>>, Error> {
+        self.inner.fetch(id).await
+    }
+
+    async fn append(&self, body: Vec<u8>) -> Result<String, Error> {
+        let hit = String::from_utf8_lossy(&body).contains(self.marker);
+        let id = self.inner.append(body).await?;
+        if hit {
+            if let Some(hook) = self.hook.lock().unwrap().take() {
+                hook();
+            }
+        }
+        Ok(id)
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), Error> {
+        self.inner.delete(id).await
+    }
+}
+
+#[tokio::test]
+async fn a_lost_recovery_code_stops_working_after_a_restart() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let ida = Identity::generate("laptop");
+    let (a, lost) = Replica::create(folder.clone(), ida.clone(), time.clock(0))
+        .await
+        .unwrap();
+    // A fresh run of the app has read nothing yet.
+    let key = a.key().unwrap().clone();
+    let mut again = Replica::with_key(folder.clone(), ida, time.clock(0), key);
+    let fresh = again.reissue_recovery().await.unwrap();
+    let mut c = Replica::new(folder.clone(), Identity::generate("c"), time.clock(0));
+    assert!(c.recover(&lost.to_string()).await.is_err());
+    c.recover(&fresh.to_string()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_change_written_while_the_key_rotates_is_not_lost() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let ida = Identity::generate("laptop");
+    let (mut a0, _) = Replica::create(folder.clone(), ida.clone(), time.clock(0))
+        .await
+        .unwrap();
+    let mut b = join(&mut a0, &folder, &time, "phone", 0).await;
+    let mut c = join(&mut a0, &folder, &time, "tablet", 0).await;
+    let a_key = a0.key().unwrap().clone();
+
+    // The phone writes just after the laptop has read the folder and begun to rotate.
+    let spy = Spy::new(
+        &folder,
+        "\"t\":\"rotation\"",
+        Box::new(move || block_on(b.set("late", "from the phone")).unwrap()),
+    );
+    let mut a = Replica::with_key(spy, ida, time.clock(0), a_key);
+    a.pull().await.unwrap();
+    a.remove_device(c.id()).await.unwrap();
+    assert_eq!(a.get("late"), Some("from the phone"));
+    let key = a.key().unwrap().clone();
+    let mut a2 = Replica::with_key(folder.clone(), Identity::generate("x"), time.clock(0), key);
+    a2.pull().await.unwrap();
+    assert_eq!(a2.get("late"), Some("from the phone"));
+    assert!(c.pull().await.unwrap().needs_rejoin);
+}
+
+#[tokio::test]
+async fn rekeying_another_account_keeps_a_change_made_meanwhile() {
+    let time = Time::new();
+    let sync_folder = MemoryFolder::new();
+    let acct = MemoryFolder::new();
+    let a = first(&sync_folder, &time, "laptop").await;
+    let key = a.key().unwrap().clone();
+    let mut other = Replica::with_key(
+        acct.clone(),
+        Identity::generate("phone"),
+        time.clock(0),
+        key.clone(),
+    );
+    let spy = Spy::new(
+        &acct,
+        "\"what\":\"snapshot\"",
+        Box::new(move || block_on(other.set("late", "x")).unwrap()),
+    );
+    let mut mine = Replica::with_key(spy, Identity::generate("laptop"), time.clock(0), key);
+    mine.set("early", "y").await.unwrap();
+    let mut raw = a.key().unwrap().to_secret().to_vec();
+    raw[0] = 2;
+    let new_key = SettingsKey::from_secret(&raw).unwrap();
+    mine.rekey(new_key.clone()).await.unwrap();
+    assert_eq!(mine.get("late"), Some("x"));
+    let mut check = Replica::with_key(
+        acct.clone(),
+        Identity::generate("z"),
+        time.clock(0),
+        new_key,
+    );
+    check.pull().await.unwrap();
+    assert_eq!(check.get("late"), Some("x"));
+    assert_eq!(check.get("early"), Some("y"));
 }
