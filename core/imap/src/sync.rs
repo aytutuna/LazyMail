@@ -157,7 +157,12 @@ pub(crate) async fn sync_folder(
                     ))
                     .await?;
                 summary.changed += apply_changes(store, folder.id, &mut known, &reply.fetched)?;
-                gone.extend(reply.vanished);
+                gone.extend(
+                    known
+                        .keys()
+                        .copied()
+                        .filter(|u| reply.vanished.iter().any(|r| r.contains(u))),
+                );
             }
             (_, true, Some(m)) if complete => {
                 let reply = conn

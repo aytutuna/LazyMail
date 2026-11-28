@@ -156,9 +156,9 @@ impl Connection {
             reply
         };
         let moved = reply.copy_uid.and_then(|m| {
-            m.to.first().map(|u| Moved {
+            m.first.map(|uid| Moved {
                 uidvalidity: m.validity,
-                uid: *u,
+                uid,
             })
         });
         let s = store.lock().unwrap();

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -93,8 +94,9 @@ pub(crate) struct Selected {
 pub(crate) struct Reply {
     pub fetched: Vec<Fetched>,
     pub search: Vec<u32>,
-    /// UIDs the server says are gone (QRESYNC's VANISHED).
-    pub vanished: Vec<u32>,
+    /// UIDs the server says are gone (QRESYNC's VANISHED), as the ranges it sent: a server
+    /// without expunge history may name a range of millions.
+    pub vanished: Vec<RangeInclusive<u32>>,
     pub copy_uid: Option<UidMap>,
     pub append_uid: Option<(u32, u32)>,
     pub folders: Vec<RemoteFolder>,
@@ -106,16 +108,14 @@ pub(crate) struct Reply {
 
 pub(crate) struct UidMap {
     pub validity: u32,
-    pub to: Vec<u32>,
+    pub first: Option<u32>,
 }
 
-fn expand(set: &[UidSetMember]) -> Vec<u32> {
-    set.iter()
-        .flat_map(|m| match m {
-            UidSetMember::Uid(u) => *u..=*u,
-            UidSetMember::UidRange(r) => r.clone(),
-        })
-        .collect()
+fn first_uid(set: &[UidSetMember]) -> Option<u32> {
+    set.first().map(|m| match m {
+        UidSetMember::Uid(u) => *u,
+        UidSetMember::UidRange(r) => *r.start(),
+    })
 }
 
 impl Reply {
@@ -141,7 +141,7 @@ impl Reply {
         match r {
             Response::Fetch(_, attrs) => self.fetched.extend(parse::fetched(attrs)),
             Response::Vanished { uids, .. } => {
-                self.vanished.extend(uids.iter().flat_map(|u| u.clone()))
+                self.vanished.extend(uids.iter().cloned())
             }
             Response::MailboxData(MailboxDatum::Search(v)) => self.search.extend(v),
             Response::MailboxData(MailboxDatum::Exists(n)) => self.exists = Some(*n),
@@ -166,11 +166,11 @@ impl Reply {
                 ResponseCode::CopyUid(validity, _, to) => {
                     self.copy_uid = Some(UidMap {
                         validity: *validity,
-                        to: expand(to),
+                        first: first_uid(to),
                     })
                 }
                 ResponseCode::AppendUid(validity, uids) => {
-                    self.append_uid = expand(uids).first().map(|u| (*validity, *u))
+                    self.append_uid = first_uid(uids).map(|u| (*validity, u))
                 }
                 _ => {}
             },
