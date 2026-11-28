@@ -638,11 +638,45 @@ async fn mail_announced_before_the_idle_go_ahead_is_not_slept_through() {
     let end = conn
         .idle(
             std::time::Duration::from_secs(30),
-            &tokio::sync::Notify::new(),
+            &crate::Stop::new(),
         )
         .await
         .unwrap();
     assert_eq!(end, crate::conn::IdleEnd::Changed);
     drop(conn);
     replay.finish().unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_ends_a_sync_that_is_waiting_on_the_server() {
+    let script = format!(
+        "S: * OK The Microsoft Exchange IMAP4 service is ready.\n\
+         C: <tag> AUTHENTICATE XOAUTH2\n\
+         S: +\n\
+         C: {}\n\
+         S: <tag> OK [CAPABILITY IMAP4rev1] authenticated\n\
+         C: <tag> CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev1\n\
+         S: <tag> OK done\n\
+         C: <tag> LIST \"\" \"*\"\n\
+         C: <tag> never answered\n",
+        xoauth2_base64("u@contoso.example", "access-1")
+    );
+    let replay = serve(&script);
+    let tokens = StaticTokens::default();
+    tokens.set("o1", Resource::Mail, Ok("access-1".into()));
+    let (imap, _account, _rx, _signin, _dir) = outlook_imap(&replay, tokens);
+    let imap = Arc::new(imap);
+    let stop = crate::Stop::new();
+    let task = {
+        let (imap, stop) = (imap.clone(), stop.clone());
+        tokio::spawn(async move { imap.run(&stop).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    stop.stop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .expect("run ends while the server is silent")
+        .unwrap();
+    drop(replay);
 }

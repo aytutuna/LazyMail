@@ -14,12 +14,11 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use tempfile::TempDir;
-use tokio::sync::Notify;
 
 use crate::conn::{Connection, Credential, Server, Transport};
 use crate::folders;
 use crate::sync::{sync_folder, Policy, Progress, Summary};
-use crate::{Error, Imap, Update};
+use crate::{Error, Imap, Stop, Update};
 
 mod transcripts;
 
@@ -712,7 +711,7 @@ async fn watchers_leave_a_connection_free_for_actions() {
     let store = new_store(&dir);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let imap = Arc::new(imap_for(&env, &store, tx));
-    let stop = Arc::new(Notify::new());
+    let stop = Stop::new();
     let mut conn = env.open().await;
     let (a, b) = (unique("watch-a"), unique("watch-b"));
     create(&mut conn, &a).await;
@@ -737,7 +736,7 @@ async fn watchers_leave_a_connection_free_for_actions() {
         .unwrap();
     let action = tokio::time::timeout(Duration::from_secs(5), imap.connect()).await;
     assert!(action.expect("an action finds a connection").is_ok());
-    stop.notify_waiters();
+    stop.stop();
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         let _ = run.await;
         let _ = first.await;
@@ -982,7 +981,7 @@ async fn idle_brings_in_new_mail_and_stops_on_request() {
     let store = new_store(&dir);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let imap = Arc::new(imap_for(&env, &store, tx));
-    let stop = Arc::new(Notify::new());
+    let stop = Stop::new();
     let task = {
         let (imap, stop) = (imap.clone(), stop.clone());
         tokio::spawn(async move { imap.run(&stop).await })
@@ -1022,7 +1021,7 @@ async fn idle_brings_in_new_mail_and_stops_on_request() {
     .await
     .unwrap();
     until(|| inbox_count(&store) == before + 1).await;
-    stop.notify_one();
+    stop.stop();
     tokio::time::timeout(Duration::from_secs(10), task)
         .await
         .expect("run stops when asked")

@@ -413,7 +413,7 @@ impl Connection {
     pub(crate) async fn idle(
         &mut self,
         max: Duration,
-        stop: &tokio::sync::Notify,
+        stop: &crate::stop::Stop,
     ) -> Result<IdleEnd> {
         let tag = self.session.run_command("IDLE").await?;
         // Mail that lands between the last SELECT and the server's go-ahead may be announced
@@ -446,7 +446,7 @@ impl Connection {
             tokio::select! {
                 r = self.wait_for_change() => r?,
                 _ = tokio::time::sleep(max) => IdleEnd::Timeout,
-                _ = stop.notified() => IdleEnd::Stopped,
+                _ = stop.stopped() => IdleEnd::Stopped,
             }
         };
         self.session.run_command_untagged("DONE").await?;

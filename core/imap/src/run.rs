@@ -7,11 +7,12 @@ use lazymail_accounts::{
 };
 use lazymail_store::Store;
 use rustls::ClientConfig;
-use tokio::sync::{mpsc::UnboundedSender, Notify};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::conn::{Connection, Credential, IdleEnd, Server};
 use crate::error::{Error, Result};
 use crate::folders;
+use crate::stop::Stop;
 use crate::sync::{drop_unplaced, sync_folder, Policy, Progress, Summary};
 
 /// A server may drop an IDLE that lasts longer than 29 minutes; a shorter one also finds a
@@ -282,7 +283,7 @@ impl<T: TokenSource> Imap<T> {
     /// Syncs everything, then follows the Inbox through IDLE until `stop` is notified.
     /// Failures are retried with a growing pause; a sign-in problem waits for the hourly
     /// retry and Gmail's download limit for the next day, saying so through `Update`.
-    pub async fn run(&self, stop: &Notify) {
+    pub async fn run(&self, stop: &Stop) {
         self.keep_running(stop, None).await
     }
 
@@ -290,7 +291,7 @@ impl<T: TokenSource> Imap<T> {
     /// the Inbox only, so for Gmail this returns at once, and so it does when the account has no
     /// connection to spare: the account's limit less one for the main session and one kept free
     /// for actions.
-    pub async fn watch(&self, folder: &str, stop: &Notify) {
+    pub async fn watch(&self, folder: &str, stop: &Stop) {
         if self.server.gmail {
             return;
         }
@@ -300,12 +301,12 @@ impl<T: TokenSource> Imap<T> {
         self.keep_running(stop, Some(folder)).await
     }
 
-    async fn keep_running(&self, stop: &Notify, folder: Option<&str>) {
+    async fn keep_running(&self, stop: &Stop, folder: Option<&str>) {
         let mut backoff = Backoff::default();
         loop {
             let wait = match self.session(stop, folder, &mut backoff).await {
                 Ok(()) => return,
-                Err(Error::Auth(AuthFailure::GraphNeeded)) => return,
+                Err(Error::Stopped | Error::Auth(AuthFailure::GraphNeeded)) => return,
                 Err(Error::Auth(_)) => RETRY_INTERVAL,
                 Err(Error::Paused) => PAUSED_CHECK,
                 Err(Error::DownloadLimit) => {
@@ -318,23 +319,23 @@ impl<T: TokenSource> Imap<T> {
             };
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
-                _ = stop.notified() => return,
+                _ = stop.stopped() => return,
             }
         }
     }
 
     async fn session(
         &self,
-        stop: &Notify,
+        stop: &Stop,
         folder: Option<&str>,
         backoff: &mut Backoff,
     ) -> Result<()> {
-        let mut conn = self.connect().await?;
+        let mut conn = stop.guard(self.connect()).await?;
         let watched = folder.unwrap_or("INBOX");
         if folder.is_none() {
-            self.sync_all(&mut conn).await?;
+            stop.guard(self.sync_all(&mut conn)).await?;
         } else {
-            self.sync_watched(&mut conn, watched).await?;
+            stop.guard(self.sync_watched(&mut conn, watched)).await?;
         }
         // What the folder looked like at the last sync. A change that lands between the sync
         // and the IDLE shows up in the next SELECT, so it is not slept through.
@@ -343,7 +344,7 @@ impl<T: TokenSource> Imap<T> {
             let sel = conn.select(watched).await?;
             let now = (sel.validity, sel.uidnext, sel.exists, sel.modseq);
             if synced != Some(now) {
-                self.sync_watched(&mut conn, watched).await?;
+                stop.guard(self.sync_watched(&mut conn, watched)).await?;
                 synced = Some(now);
                 continue;
             }
@@ -353,7 +354,7 @@ impl<T: TokenSource> Imap<T> {
             if !conn.caps.idle {
                 tokio::select! {
                     _ = tokio::time::sleep(POLL) => {}
-                    _ = stop.notified() => return Ok(()),
+                    _ = stop.stopped() => return Ok(()),
                 }
                 synced = None;
             } else {

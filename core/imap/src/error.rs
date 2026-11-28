@@ -20,6 +20,8 @@ pub enum Error {
     Paused,
     #[error("connection closed")]
     Closed,
+    #[error("stopped")]
+    Stopped,
     #[error("unexpected server reply: {0}")]
     Protocol(String),
     #[error(transparent)]
