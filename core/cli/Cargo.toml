@@ -11,5 +11,6 @@ name = "lazymail"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-lazymail-core = { path = ".." }
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+lazymail-core = { path = "..", features = ["dev-key"] }
