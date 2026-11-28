@@ -40,6 +40,7 @@ mod crypto;
 mod folder;
 mod identity;
 mod join;
+mod lease;
 mod replica;
 mod wire;
 
@@ -47,6 +48,7 @@ pub use crypto::{RecoveryCode, SettingsKey};
 pub use folder::{Folder, MemoryFolder};
 pub use identity::{DeviceId, Identity};
 pub use join::{JoinOffered, JoinRequestInfo};
+pub use lease::{scheduled_message_id, LEASE_MS, MAIN_DEVICE};
 pub use replica::{system_clock, Clock, NewKeyWarning, Pulled, Replica, COMPACT_AT};
 pub use wire::{DeviceRecord, Entry, Hlc};
 
