@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::{Error, Result};
 
-const MIGRATIONS: &[&str] = &[V1];
+const MIGRATIONS: &[&str] = &[V1, V2];
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -164,4 +164,9 @@ CREATE TRIGGER messages_au AFTER UPDATE OF subject, from_text, to_text, body_tex
     INSERT INTO msg_tri(rowid, subject, from_text, body_text)
         SELECT new.id, new.subject, new.from_text, new.body_text WHERE new.cjk = 1;
 END;
+";
+
+const V2: &str = "
+ALTER TABLE outbox ADD COLUMN check_sent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outbox ADD COLUMN first_try INTEGER;
 ";

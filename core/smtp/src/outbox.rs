@@ -81,18 +81,22 @@ impl<T: TokenSource, S: SentBox> Outbox<'_, T, S> {
         };
 
         for item in due {
-            self.store.outbox_begin_send(item.id)?;
+            self.store.outbox_begin_send(item.id, now)?;
             match self.in_sent(&item).await {
                 Lookup::Found => {
-                    self.store.outbox_mark_sent(item.id)?;
+                    self.store.outbox_mark_sent(item.id, now)?;
                     self.store.outbox_remove(item.id)?;
                     report.sent += 1;
                     continue;
                 }
                 Lookup::Unknown(e) => {
                     let msg = format!("could not search Sent: {e}");
-                    self.store
-                        .outbox_fail(item.id, &msg, Some(now + backoff(item.attempts)))?;
+                    self.store.outbox_fail(
+                        item.id,
+                        &msg,
+                        Some(now + backoff(item.attempts)),
+                        false,
+                    )?;
                     report.retry += 1;
                     continue;
                 }
@@ -101,28 +105,33 @@ impl<T: TokenSource, S: SentBox> Outbox<'_, T, S> {
             match smtp.send(&item.raw).await {
                 Ok(()) => {
                     signin.report_success(&account.id);
-                    self.store.outbox_mark_sent(item.id)?;
+                    self.store.outbox_mark_sent(item.id, now)?;
                     report.sent += 1;
                 }
                 Err(SendError::Auth(f)) => {
                     // The mail is untouched and goes out when the account signs in again.
-                    self.store.outbox_fail(item.id, f.message(), Some(now))?;
+                    self.store
+                        .outbox_fail(item.id, f.message(), Some(now), false)?;
                     report.retry += 1;
                     report.events.extend(signin.report_failure(account, f, at));
                     break;
                 }
                 Err(SendError::Temporary(e)) if now - item.created < GIVE_UP_AFTER => {
-                    self.store
-                        .outbox_fail(item.id, &e, Some(now + backoff(item.attempts)))?;
+                    self.store.outbox_fail(
+                        item.id,
+                        &e,
+                        Some(now + backoff(item.attempts)),
+                        false,
+                    )?;
                     report.retry += 1;
                 }
                 Err(SendError::Temporary(e)) => {
                     let msg = format!("gave up after three days: {e}");
-                    self.store.outbox_fail(item.id, &msg, None)?;
+                    self.store.outbox_fail(item.id, &msg, None, false)?;
                     report.failed += 1;
                 }
                 Err(SendError::Permanent(e)) => {
-                    self.store.outbox_fail(item.id, &e, None)?;
+                    self.store.outbox_fail(item.id, &e, None, false)?;
                     report.failed += 1;
                 }
             }

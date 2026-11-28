@@ -35,7 +35,7 @@ fn q(text: &str) -> SearchQuery {
 fn reopen_keeps_data_and_wrong_key_is_refused() {
     let dir = TempDir::new().unwrap();
     let (store, key, wrapper) = open(&dir);
-    assert_eq!(store.schema_version().unwrap(), 1);
+    assert_eq!(store.schema_version().unwrap(), 2);
     let f = store.upsert_folder("INBOX", Some("inbox")).unwrap();
     store
         .insert_message(&msg(f.id, "hello", "world", 1))
@@ -329,7 +329,7 @@ fn outbox_lifecycle() {
     assert_eq!(store.outbox_due(150).unwrap().len(), 1);
     assert_eq!(store.outbox_due(250).unwrap().len(), 2);
 
-    store.outbox_begin_send(a).unwrap();
+    store.outbox_begin_send(a, 250).unwrap();
     assert_eq!(store.outbox_due(250).unwrap().len(), 1);
     assert_eq!(store.outbox_requeue_interrupted(260).unwrap(), 1);
     assert_eq!(
@@ -337,8 +337,8 @@ fn outbox_lifecycle() {
         OutboxState::Queued
     );
 
-    store.outbox_begin_send(a).unwrap();
-    store.outbox_fail(a, "timeout", Some(400)).unwrap();
+    store.outbox_begin_send(a, 270).unwrap();
+    store.outbox_fail(a, "timeout", Some(400), false).unwrap();
     let it = store.outbox_item(a).unwrap().unwrap();
     assert_eq!(
         (it.state, it.attempts, it.next_try),
@@ -349,8 +349,8 @@ fn outbox_lifecycle() {
     assert_eq!(store.outbox_due(399).unwrap().len(), 1);
     assert_eq!(store.outbox_due(400).unwrap().len(), 2);
 
-    store.outbox_begin_send(b).unwrap();
-    store.outbox_fail(b, "550 rejected", None).unwrap();
+    store.outbox_begin_send(b, 300).unwrap();
+    store.outbox_fail(b, "550 rejected", None, false).unwrap();
     let it = store.outbox_item(b).unwrap().unwrap();
     assert_eq!(
         (it.state, it.last_error.as_deref()),
@@ -360,8 +360,8 @@ fn outbox_lifecycle() {
     store.outbox_requeue(b, 500).unwrap();
     assert_eq!(store.outbox_due(1000).unwrap().len(), 2);
 
-    store.outbox_begin_send(a).unwrap();
-    store.outbox_mark_sent(a).unwrap();
+    store.outbox_begin_send(a, 500).unwrap();
+    store.outbox_mark_sent(a, 530).unwrap();
     assert_eq!(
         store.outbox_item(a).unwrap().unwrap().state,
         OutboxState::Sent
@@ -1312,10 +1312,10 @@ fn only_a_queued_item_starts_sending() {
     let dir = TempDir::new().unwrap();
     let (store, _, _) = open(&dir);
     let a = store.outbox_enqueue("<m@x>", b"raw", 1).unwrap();
-    store.outbox_begin_send(a).unwrap();
-    assert!(store.outbox_begin_send(a).is_err());
-    store.outbox_mark_sent(a).unwrap();
-    assert!(store.outbox_begin_send(a).is_err());
+    store.outbox_begin_send(a, 1).unwrap();
+    assert!(store.outbox_begin_send(a, 1).is_err());
+    store.outbox_mark_sent(a, 2).unwrap();
+    assert!(store.outbox_begin_send(a, 1).is_err());
 }
 
 #[test]
@@ -1323,16 +1323,50 @@ fn transitions_follow_the_state() {
     let dir = TempDir::new().unwrap();
     let (store, _, _) = open(&dir);
     let a = store.outbox_enqueue("<m@x>", b"raw", 1).unwrap();
-    assert!(store.outbox_mark_sent(a).is_err());
-    assert!(store.outbox_fail(a, "x", None).is_err());
-    store.outbox_begin_send(a).unwrap();
+    assert!(store.outbox_mark_sent(a, 2).is_err());
+    assert!(store.outbox_fail(a, "x", None, false).is_err());
+    store.outbox_begin_send(a, 1).unwrap();
     assert!(store.outbox_requeue(a, 5).is_err());
     assert_eq!(store.outbox_due(10).unwrap().len(), 0);
-    store.outbox_mark_sent(a).unwrap();
+    store.outbox_mark_sent(a, 2).unwrap();
     assert!(store.outbox_requeue(a, 5).is_err());
-    assert!(store.outbox_fail(a, "x", Some(5)).is_err());
+    assert!(store.outbox_fail(a, "x", Some(5), false).is_err());
     assert_eq!(
         store.outbox_item(a).unwrap().unwrap().state,
         OutboxState::Sent
     );
+}
+
+#[test]
+fn scheduled_and_requeued_mail_is_checked_against_sent() {
+    let dir = TempDir::new().unwrap();
+    let (store, _, _) = open(&dir);
+    let plain = store.outbox_enqueue("<a@x>", b"raw", 10).unwrap();
+    let sched = store.outbox_enqueue_scheduled("<b@x>", b"raw", 10).unwrap();
+    let flags = |id| store.outbox_item(id).unwrap().unwrap().check_sent;
+    assert!(!flags(plain));
+    assert!(flags(sched));
+
+    // The give-up clock starts at the first attempt and survives a retry.
+    store.outbox_begin_send(plain, 500).unwrap();
+    store.outbox_fail(plain, "busy", Some(600), false).unwrap();
+    store.outbox_begin_send(plain, 600).unwrap();
+    let it = store.outbox_item(plain).unwrap().unwrap();
+    assert_eq!(it.first_try, Some(500));
+    assert!(!it.check_sent);
+
+    // A failure that may have reached the server turns the check on.
+    store
+        .outbox_fail(plain, "lost reply", Some(700), true)
+        .unwrap();
+    assert!(flags(plain));
+
+    // Requeueing restarts the clock.
+    store.outbox_requeue(plain, 800).unwrap();
+    assert_eq!(store.outbox_item(plain).unwrap().unwrap().first_try, None);
+
+    let crashed = store.outbox_enqueue("<c@x>", b"raw", 10).unwrap();
+    store.outbox_begin_send(crashed, 20).unwrap();
+    assert_eq!(store.outbox_requeue_interrupted(30).unwrap(), 1);
+    assert!(flags(crashed));
 }
