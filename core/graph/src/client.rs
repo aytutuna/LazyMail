@@ -12,7 +12,9 @@ pub const BASE_URL: &str = "https://graph.microsoft.com/v1.0";
 /// A longer Retry-After than this is handed back to the caller to schedule.
 const MAX_WAIT: Duration = Duration::from_secs(60);
 const RETRIES: u32 = 3;
-const TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Idle time between reads, so a large message on a slow link is not cut off.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -59,7 +61,8 @@ impl<T: TokenSource> Graph<T> {
         Graph {
             http: Client::builder()
                 .use_preconfigured_tls(tls_config())
-                .timeout(TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(READ_TIMEOUT)
                 .build()
                 .expect("http client"),
             base: base.trim_end_matches('/').to_string(),
