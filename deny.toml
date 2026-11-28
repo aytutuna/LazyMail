@@ -38,3 +38,4 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
+deny = [{ name = "ring" }]
