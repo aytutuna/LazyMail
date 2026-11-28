@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "core/cli", "core/store", "uniffi-bindgen"]
+members = ["core", "core/accounts", "core/cli", "core/store", "uniffi-bindgen"]
 resolver = "2"
 
 [workspace.package]
