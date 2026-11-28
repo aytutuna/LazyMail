@@ -12,6 +12,9 @@ use crate::{DeviceId, Error, Folder, Identity, Result};
 /// Changes in the folder after which a device writes a snapshot.
 pub const COMPACT_AT: usize = 200;
 
+/// Changes stamped further ahead than this are ignored.
+const MAX_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
+
 /// Milliseconds since the Unix epoch.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -237,8 +240,11 @@ impl<F: Folder> Replica<F> {
         if now > self.last.wall {
             self.last.wall = now;
             self.last.counter = 0;
+        } else if let Some(c) = self.last.counter.checked_add(1) {
+            self.last.counter = c;
         } else {
-            self.last.counter += 1;
+            self.last.wall += 1;
+            self.last.counter = 0;
         }
         self.last
     }
@@ -293,6 +299,10 @@ impl<F: Folder> Replica<F> {
     }
 
     fn merge(&mut self, key: String, entry: Entry) -> bool {
+        // A stamp far ahead of this clock would beat every later edit of the key.
+        if entry.hlc.wall > (self.clock)().saturating_add(MAX_AHEAD_MS) {
+            return false;
+        }
         self.observe(&entry.hlc);
         match self.entries.get(&key) {
             Some(cur) if cur.hlc >= entry.hlc => false,

@@ -399,3 +399,40 @@ async fn a_message_copied_into_another_accounts_folder_is_ignored() {
     assert_eq!(pulled.changed, 0);
     assert_eq!(b.get("signature"), None);
 }
+
+#[tokio::test]
+async fn a_stamp_far_ahead_or_at_the_counter_limit_does_not_pin_a_key() {
+    use crate::wire::{Change, Entry, Hlc};
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    a.set("k", "real").await.unwrap();
+
+    let now = clock()();
+    for (wall, counter) in [
+        (u64::MAX, 0),
+        (now + 365 * 24 * 3_600_000, 0),
+        (now, u32::MAX),
+    ] {
+        let change = Change {
+            key: "k".into(),
+            entry: Entry {
+                hlc: Hlc {
+                    wall,
+                    counter,
+                    device: b.id(),
+                },
+                value: Some(format!("pinned {wall} {counter}")),
+            },
+        };
+        b.put(Kind::Change, &change, Meta::Change).await.unwrap();
+    }
+    a.pull().await.unwrap();
+    // Only the stamp at the counter limit is within reach, and it still must not panic.
+    a.set("k", "later").await.unwrap();
+    a.set("k", "latest").await.unwrap();
+    assert_eq!(a.get("k"), Some("latest"));
+    assert_ne!(a.get("k"), Some("pinned 18446744073709551615 0"));
+}
