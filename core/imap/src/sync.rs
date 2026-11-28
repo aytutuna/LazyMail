@@ -197,6 +197,7 @@ pub(crate) async fn sync_folder(
                 .filter(|u| !known.contains_key(u))
                 .collect()
         }
+        None if unchanged => Vec::new(),
         None => {
             let max = known.keys().copied().max().unwrap_or(0);
             let found = conn.uid_search(&format!("UID {}:*", max + 1)).await?;
