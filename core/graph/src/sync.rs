@@ -22,6 +22,16 @@ const ROLES: [(&str, &str); 6] = [
     ("archive", "archive"),
 ];
 
+/// Folders that hold no mail of the person's, by the names Outlook gives them in English.
+const SYSTEM_FOLDERS: [&str; 6] = [
+    "Outbox",
+    "Sync Issues",
+    "Conversation History",
+    "Conflicts",
+    "Local Failures",
+    "Server Failures",
+];
+
 const MESSAGE_FIELDS: &str =
     "internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,isDraft,flag";
 
@@ -65,6 +75,8 @@ struct FolderItem {
     id: String,
     #[serde(rename = "displayName", default)]
     name: String,
+    #[serde(rename = "parentFolderId")]
+    parent: Option<String>,
     #[serde(rename = "@removed")]
     removed: Option<serde_json::Value>,
 }
@@ -220,7 +232,7 @@ impl<T: TokenSource> Graph<T> {
             Some(link) => self.link(link)?,
             None => self.url(
                 &["me", "mailFolders", "delta"],
-                &[("$select", "displayName")],
+                &[("$select", "displayName,parentFolderId")],
             ),
         };
         let mut seen = HashSet::new();
@@ -234,22 +246,35 @@ impl<T: TokenSource> Graph<T> {
                 .ok_or_else(|| Error::BadResponse("page without a link".into()))?;
             store.atomic(|s| {
                 for item in &page.value {
+                    let all = s.folders()?;
+                    let by_id = |id: &str| all.iter().find(|f| f.remote_id.as_deref() == Some(id));
+                    let known = by_id(&item.id);
                     if item.removed.is_some() {
-                        let known = s
-                            .folders()?
-                            .into_iter()
-                            .find(|f| f.remote_id.as_deref() == Some(&item.id));
                         if let Some(f) = known {
                             s.remove_folder(f.id)?;
                             changed = true;
                         }
+                    } else if SYSTEM_FOLDERS.contains(&item.name.as_str()) {
+                        if let Some(f) = known {
+                            s.remove_folder(f.id)?;
+                        }
                     } else {
-                        s.upsert_remote_folder(&item.id, &item.name, None)?;
+                        // Under a parent that is already known, the name carries the path so
+                        // equal names in different places stay apart.
+                        let name = match item.parent.as_deref().and_then(by_id) {
+                            Some(p) => format!("{}/{}", p.name, item.name),
+                            None => item.name.clone(),
+                        };
+                        s.upsert_remote_folder(&item.id, &name, None)?;
                         seen.insert(item.id.clone());
-                        changed = true;
+                        changed |= known.is_none();
                     }
                 }
-                s.set_secret(FOLDER_DELTA, resume.as_bytes())
+                // A listing from scratch keeps no resume link, so the sweep below always runs.
+                if !full || page.next.is_none() {
+                    s.set_secret(FOLDER_DELTA, resume.as_bytes())?;
+                }
+                Ok(())
             })?;
             match &page.next {
                 Some(next) => url = self.link(next)?,
@@ -263,7 +288,11 @@ impl<T: TokenSource> Graph<T> {
                 }
             }
         }
-        if changed {
+        let inbox_known = store
+            .folders()?
+            .iter()
+            .any(|f| f.role.as_deref() == Some("inbox"));
+        if changed || !inbox_known {
             self.resolve_roles(store).await?;
         }
         Ok(())

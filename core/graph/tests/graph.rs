@@ -78,7 +78,7 @@ impl Env {
     async fn mailbox(&self) {
         self.json(
             "/me/mailFolders/delta",
-            &[("$select", "displayName")],
+            &[("$select", "displayName,parentFolderId")],
             fixture(self, "folders_delta_1.json"),
         )
         .await;
@@ -810,6 +810,137 @@ async fn an_edited_draft_is_downloaded_again() {
     assert!(m.body_text.unwrap().contains("Three things"));
     assert!(m.flags.draft);
     assert_eq!(e.store.folder_graph_ids(drafts.id).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn folders_keep_their_parents_and_system_folders_are_left_out() {
+    let e = env().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/me/mailFolders/[a-z]+$"))
+        .respond_with(ResponseTemplate::new(404).set_body_raw(
+            r#"{"error":{"code":"ErrorFolderNotFound","message":"missing"}}"#,
+            "application/json",
+        ))
+        .with_priority(10)
+        .mount(&e.server)
+        .await;
+    e.json(
+        "/me/mailFolders/delta",
+        &[],
+        fixture(&e, "folders_delta_tree.json"),
+    )
+    .await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let mut names: Vec<_> = e
+        .store
+        .folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["Inbox", "Inbox/2026", "Sent Items", "Sent Items/2026"]
+    );
+}
+
+#[tokio::test]
+async fn an_unchanged_folder_list_does_not_look_up_the_roles_again() {
+    let e = env().await;
+    e.mailbox().await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    e.json(
+        "/me/mailFolders/delta",
+        &[("$deltatoken", "folders-1")],
+        r#"{"value":[{"id":"inbox-id","displayName":"Inbox"}],"@odata.deltaLink":"http://x/me/mailFolders/delta?$deltatoken=folders-1"}"#.replace("http://x", &e.server.uri()),
+    )
+    .await;
+    let before = e.server.received_requests().await.unwrap().len();
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let requests = e.server.received_requests().await.unwrap();
+    assert_eq!(requests.len() - before, 1);
+}
+
+#[tokio::test]
+async fn a_removed_folder_takes_its_messages_with_it() {
+    let e = env().await;
+    e.mailbox().await;
+    e.inbox().await;
+    e.graph.sync(&e.store).await.unwrap();
+    e.json(
+        "/me/mailFolders/delta",
+        &[("$deltatoken", "folders-1")],
+        format!(
+            r#"{{"value":[{{"id":"inbox-id","@removed":{{"reason":"deleted"}}}}],"@odata.deltaLink":"{}/me/mailFolders/delta?$deltatoken=folders-2"}}"#,
+            e.server.uri()
+        ),
+    )
+    .await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    assert!(e.store.find_by_graph_id(M1).unwrap().is_none());
+    assert!(e.store.find_by_graph_id(M3).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_expired_folder_link_lists_the_folders_again() {
+    let e = env().await;
+    e.mailbox().await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/delta"))
+        .and(query_param("$deltatoken", "folders-1"))
+        .respond_with(ResponseTemplate::new(410).set_body_raw(
+            fixture(&e, "error_sync_state_not_found.json"),
+            "application/json",
+        ))
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    e.store
+        .upsert_remote_folder("stale-id", "Stale", None)
+        .unwrap();
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let names: Vec<_> = e
+        .store
+        .folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(names.len(), 6);
+    assert!(!names.contains(&"Stale".to_string()));
+}
+
+#[tokio::test]
+async fn an_interrupted_folder_listing_still_sweeps_when_it_is_repeated() {
+    let e = env().await;
+    e.mailbox().await;
+    e.store
+        .upsert_remote_folder("stale-id", "Stale", None)
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/delta"))
+        .and(query_param("$skiptoken", "folders-p2"))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(
+            r#"{"error":{"code":"ErrorInternalServerError","message":"x"}}"#,
+            "application/json",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    assert!(e.graph.sync_folders(&e.store).await.is_err());
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let names: Vec<_> = e
+        .store
+        .folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert!(!names.contains(&"Stale".to_string()));
+    assert_eq!(names.len(), 6);
 }
 
 #[tokio::test]
