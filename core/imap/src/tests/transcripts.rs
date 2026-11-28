@@ -867,7 +867,16 @@ async fn a_server_that_stops_answering_during_sign_in_times_out() {
                   C: <tag> LOGIN \"u\" \"pw\"\n\
                   C: <tag> never answered\n";
     let replay = serve(script);
-    let err = open(&replay, Provider::Other, false).await.err().unwrap();
+    let err = Connection::open_within(
+        std::time::Duration::from_secs(1),
+        &server_of(&replay, Provider::Other, false),
+        &Credential::Password("pw".into()),
+        &trust_anything(),
+        true,
+    )
+    .await
+    .err()
+    .unwrap();
     assert!(
         matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::TimedOut),
         "{err:?}"

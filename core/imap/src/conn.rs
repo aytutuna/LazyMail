@@ -19,7 +19,7 @@ use crate::utf7;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// Everything from the first packet to the end of the sign-in, so a server that stalls
 /// halfway cannot hold one of the account's connections for good.
-const OPEN_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 90 });
+const OPEN_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -228,12 +228,19 @@ impl Connection {
         tls: &Arc<ClientConfig>,
         worked_before: bool,
     ) -> Result<Connection> {
-        tokio::time::timeout(
-            OPEN_TIMEOUT,
-            Self::sign_in(server, credential, tls, worked_before),
-        )
-        .await
-        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
+        Self::open_within(OPEN_TIMEOUT, server, credential, tls, worked_before).await
+    }
+
+    pub(crate) async fn open_within(
+        limit: Duration,
+        server: &Server,
+        credential: &Credential,
+        tls: &Arc<ClientConfig>,
+        worked_before: bool,
+    ) -> Result<Connection> {
+        tokio::time::timeout(limit, Self::sign_in(server, credential, tls, worked_before))
+            .await
+            .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
     }
 
     async fn sign_in(
