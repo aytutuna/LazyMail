@@ -243,24 +243,27 @@ pub(crate) async fn sync_folder(
     }
 
     if !complete {
-        // An earlier run may have stopped between headers and bodies.
+        // An earlier run may have stopped between headers and bodies. The store is let go
+        // between chunks, since a big folder takes a while to look through.
         let have: HashSet<i64> = pending.iter().map(|p| p.id).collect();
-        let s = store.lock().unwrap();
-        for (uid, _) in &stored {
-            let Some(id) = s.find_by_uid(folder.id, *uid)? else {
-                continue;
-            };
-            if have.contains(&id) {
-                continue;
-            }
-            if let Some(m) = s.message(id)? {
-                if m.body_text.is_none() && m.body_html.is_none() {
-                    pending.push(Pending {
-                        id,
-                        uid: *uid,
-                        date: m.date,
-                        layout: None,
-                    });
+        for chunk in stored.chunks(500) {
+            let s = store.lock().unwrap();
+            for (uid, _) in chunk {
+                let Some(id) = s.find_by_uid(folder.id, *uid)? else {
+                    continue;
+                };
+                if have.contains(&id) {
+                    continue;
+                }
+                if let Some(m) = s.message(id)? {
+                    if m.body_text.is_none() && m.body_html.is_none() {
+                        pending.push(Pending {
+                            id,
+                            uid: *uid,
+                            date: m.date,
+                            layout: None,
+                        });
+                    }
                 }
             }
         }
@@ -271,6 +274,9 @@ pub(crate) async fn sync_folder(
     pending.sort_unstable_by_key(|p| std::cmp::Reverse(p.uid));
     if !pending.is_empty() {
         fetch_bodies(conn, store, &folder.name, pending, progress).await?;
+    }
+    if let Some(since) = since {
+        store.lock().unwrap().prune_bodies(since)?;
     }
 
     store.lock().unwrap().set_sync_state(

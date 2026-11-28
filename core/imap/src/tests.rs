@@ -631,20 +631,45 @@ async fn phones_keep_bodies_only_for_recent_mail() {
             .await
             .unwrap();
     }
-    sync_named(
-        &mut conn,
-        &store,
-        &name,
-        &Policy {
-            body_days: Some(30),
-        },
-    )
-    .await;
+    let phone = Policy {
+        body_days: Some(30),
+    };
+    sync_named(&mut conn, &store, &name, &phone).await;
     let all = rows(&store, &folder_of(&store, &name));
     let by = |s: &str| all.iter().find(|m| m.subject == s).unwrap();
     assert!(by("recent").body_text.is_some());
     assert!(by("old").body_text.is_none());
-    assert_eq!(by("old").subject, "old");
+
+    // A computer's copy of the same folder has both; moving it to the phone policy drops the old one.
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    sync_named(&mut conn, &store, &name, &Policy::default()).await;
+    let all = rows(&store, &folder_of(&store, &name));
+    assert!(all.iter().all(|m| m.body_text.is_some()));
+    sync_named(&mut conn, &store, &name, &phone).await;
+    let all = rows(&store, &folder_of(&store, &name));
+    let by = |s: &str| all.iter().find(|m| m.subject == s).unwrap();
+    assert!(by("recent").body_text.is_some());
+    assert!(by("old").body_text.is_none());
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_account_never_holds_more_connections_than_its_limit() {
+    servers!(env);
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let imap = imap_for(&env, &store, tx);
+    let mut held = Vec::new();
+    for _ in 0..3 {
+        held.push(imap.connect().await.unwrap());
+    }
+    let fourth = tokio::time::timeout(Duration::from_millis(300), imap.connect()).await;
+    assert!(fourth.is_err(), "a fourth connection should wait");
+    held.pop();
+    let fourth = tokio::time::timeout(Duration::from_secs(5), imap.connect()).await;
+    assert!(fourth.unwrap().is_ok());
 }
 
 // "Wed, 01 Jan 2020 10:00:00 +0000" for a unix time.

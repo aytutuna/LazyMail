@@ -182,6 +182,8 @@ pub struct Connection {
     pub(crate) caps: Capabilities,
     pub(crate) qresync_on: bool,
     current: Option<String>,
+    /// Held while the connection lives, when the account limits its connections.
+    pub(crate) permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 struct XOAuth2 {
@@ -248,6 +250,7 @@ impl Connection {
             caps,
             qresync_on: false,
             current: None,
+            permit: None,
         };
         if conn.caps.qresync {
             conn.exec("ENABLE QRESYNC").await?;

@@ -67,6 +67,8 @@ pub struct Imap<T> {
     verified: AtomicBool,
     // Two connections must not sync the same folder at once.
     sync_lock: tokio::sync::Mutex<()>,
+    // Gmail allows three connections per account and device; other providers have their own.
+    connections: Arc<tokio::sync::Semaphore>,
 }
 
 impl<T: TokenSource> Imap<T> {
@@ -79,7 +81,11 @@ impl<T: TokenSource> Imap<T> {
         signin: Arc<Mutex<SignIn>>,
         updates: UnboundedSender<Update>,
     ) -> Option<Imap<T>> {
-        let server = Server::of(&account.lock().unwrap())?;
+        let (server, limit) = {
+            let a = account.lock().unwrap();
+            let limit = a.settings.as_ref().map_or(1, |s| s.max_connections.max(1));
+            (Server::of(&a)?, limit)
+        };
         Some(Imap {
             server,
             account,
@@ -92,6 +98,7 @@ impl<T: TokenSource> Imap<T> {
             updates,
             verified: AtomicBool::new(false),
             sync_lock: tokio::sync::Mutex::new(()),
+            connections: Arc::new(tokio::sync::Semaphore::new(limit as usize)),
         })
     }
 
@@ -161,11 +168,18 @@ impl<T: TokenSource> Imap<T> {
                 }
             }
         };
+        let permit = self
+            .connections
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the semaphore is never closed");
         let worked = self.verified.load(Ordering::Relaxed);
         match Connection::open(&self.server, &credential, &self.tls, worked).await {
-            Ok(conn) => {
+            Ok(mut conn) => {
                 self.signin.lock().unwrap().report_success(&id);
                 self.verified.store(true, Ordering::Relaxed);
+                conn.permit = Some(permit);
                 Ok(conn)
             }
             Err(Error::Auth(f)) => {
