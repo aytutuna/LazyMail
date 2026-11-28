@@ -1111,3 +1111,50 @@ async fn empty_inbox(conn: &mut Connection) {
         .unwrap();
     conn.exec("EXPUNGE").await.unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn blob_folder_keeps_binary_messages_in_order() {
+    servers!(env);
+    let folder = unique("Blobs");
+    let mut conn = env.open().await;
+    assert!(conn.list_blobs(&folder).await.unwrap().is_empty());
+    let data: Vec<Vec<u8>> = vec![vec![0, 1, 2, 255, 254], b"second".to_vec(), vec![7; 5000]];
+    let mut refs = Vec::new();
+    for (i, d) in data.iter().enumerate() {
+        let id = format!("<blob-{i}-{folder}@example.test>");
+        let raw = format!(
+            "Subject: blob\r\nMessage-ID: {id}\r\nMIME-Version: 1.0\r\n\
+             Content-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+            STANDARD.encode(d)
+        );
+        refs.push(
+            conn.append_blob(&folder, raw.as_bytes(), &id)
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(conn.list_blobs(&folder).await.unwrap(), refs);
+    for (r, d) in refs.iter().zip(&data) {
+        assert_eq!(
+            conn.fetch_blob(&folder, *r).await.unwrap().as_ref(),
+            Some(d)
+        );
+    }
+    conn.delete_blob(&folder, refs[1]).await.unwrap();
+    conn.delete_blob(&folder, refs[1]).await.unwrap();
+    assert_eq!(conn.fetch_blob(&folder, refs[1]).await.unwrap(), None);
+    assert_eq!(conn.list_blobs(&folder).await.unwrap(), [refs[0], refs[2]]);
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_settings_folder_is_not_mail() {
+    servers!(env);
+    let mut conn = env.open().await;
+    conn.list_blobs(crate::SETTINGS_FOLDER).await.unwrap();
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    let wanted = folders::refresh(&mut conn, &store).await.unwrap();
+    assert!(wanted.iter().all(|f| f.name != crate::SETTINGS_FOLDER));
+}

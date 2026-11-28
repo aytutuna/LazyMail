@@ -5,6 +5,9 @@ use lazymail_store::{Folder, Store};
 use crate::conn::{Connection, RemoteFolder};
 use crate::error::Result;
 
+/// Holds the app's own synced settings, not mail.
+pub const SETTINGS_FOLDER: &str = "Alazy";
+
 const NAMES: &[(&str, &[&str])] = &[
     (
         "sent",
@@ -222,7 +225,7 @@ pub(crate) async fn refresh(conn: &mut Connection, store: &Mutex<Store>) -> Resu
     let gmail = conn.is_gmail();
     let mut wanted: Vec<(RemoteFolder, Option<&'static str>)> = remote
         .into_iter()
-        .filter(|f| !f.has("\\noselect") && !f.has("\\nonexistent"))
+        .filter(|f| !f.has("\\noselect") && !f.has("\\nonexistent") && f.name != SETTINGS_FOLDER)
         .map(|f| {
             let role = role_of(&f);
             (f, role)
