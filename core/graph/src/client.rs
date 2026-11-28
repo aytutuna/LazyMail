@@ -33,6 +33,9 @@ pub enum Error {
     Token(String),
     #[error("unexpected response: {0}")]
     BadResponse(String),
+    /// Too big for one sendMail request; compose offers a cloud link instead.
+    #[error("message too large for Graph sendMail")]
+    TooLarge,
     #[error("no such folder or message")]
     NotFound,
     #[error(transparent)]

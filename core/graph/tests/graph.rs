@@ -625,6 +625,14 @@ async fn send_mail_posts_the_message_as_base64_text() {
 }
 
 #[tokio::test]
+async fn a_message_too_big_for_sendmail_is_refused_before_the_request() {
+    let e = env().await;
+    let raw = vec![b'x'; 3_100_000];
+    assert!(matches!(e.graph.send_mail(&raw).await, Err(Error::TooLarge)));
+    assert!(e.server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn a_message_deleted_before_its_body_is_fetched_is_skipped() {
     let e = env().await;
     e.mailbox().await;

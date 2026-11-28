@@ -7,6 +7,9 @@ use serde_json::json;
 
 use crate::client::{Error, Graph, Result};
 
+/// Graph refuses request bodies over about 4 MB; this is the base64 text's share of it.
+const MAX_SEND: usize = 4_000_000;
+
 fn message(store: &Store, id: i64) -> Result<(Message, String)> {
     let m = store.message(id)?.ok_or(Error::NotFound)?;
     let graph_id = m.graph_id.clone().ok_or(Error::NotFound)?;
@@ -74,10 +77,14 @@ impl<T: TokenSource> Graph<T> {
         Ok(())
     }
 
-    /// Sends a finished MIME message; Exchange keeps a copy in Sent Items.
+    /// Sends a finished MIME message; Exchange keeps a copy in Sent Items. A message over
+    /// about 3 MB fails with `TooLarge`, since there is no upload session path yet.
     pub async fn send_mail(&self, raw: &[u8]) -> Result<()> {
         let url = self.url(&["me", "sendMail"], &[]);
         let body = STANDARD.encode(raw);
+        if body.len() > MAX_SEND {
+            return Err(Error::TooLarge);
+        }
         self.send(|c| {
             c.post(url.clone())
                 .header(CONTENT_TYPE, "text/plain")
