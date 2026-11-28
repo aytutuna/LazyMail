@@ -73,6 +73,27 @@ async fn changes_reach_other_devices() {
 }
 
 #[tokio::test]
+async fn the_key_survives_a_restart_through_the_secrets_table() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let mut a = first(&folder, &time, "laptop").await;
+    a.set("theme", "dark").await.unwrap();
+    let stored = a.key().unwrap().to_secret();
+
+    let key = lazymail_sync::SettingsKey::from_secret(&stored).unwrap();
+    assert_eq!(key.epoch(), 1);
+    let mut b = Replica::with_key(
+        folder.clone(),
+        Identity::generate("again"),
+        time.clock(0),
+        key,
+    );
+    b.pull().await.unwrap();
+    assert_eq!(b.get("theme"), Some("dark"));
+    assert!(lazymail_sync::SettingsKey::from_secret(&stored[..10]).is_err());
+}
+
+#[tokio::test]
 async fn nothing_readable_is_stored() {
     let time = Time::new();
     let folder = MemoryFolder::new();

@@ -106,6 +106,13 @@ impl<F: Folder> Replica<F> {
         }
     }
 
+    /// A device that kept the key from an earlier run.
+    pub fn with_key(folder: F, me: Identity, clock: Clock, key: SettingsKey) -> Self {
+        let mut r = Self::new(folder, me, clock);
+        r.key = Some(key);
+        r
+    }
+
     /// Starts the first key in an empty folder. The code is shown once to be printed.
     pub async fn create(folder: F, me: Identity, clock: Clock) -> Result<(Self, RecoveryCode)> {
         if !folder.list().await?.is_empty() {

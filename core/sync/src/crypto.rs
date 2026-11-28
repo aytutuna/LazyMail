@@ -5,7 +5,7 @@ use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::identity::DeviceId;
 use crate::wire::Wrap;
@@ -80,6 +80,17 @@ impl SettingsKey {
 
     pub fn epoch(&self) -> u32 {
         self.epoch
+    }
+
+    /// The epoch and key bytes, for the device's secrets table. Anyone who
+    /// reads it can read the person's synced settings.
+    pub fn to_secret(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(self.to_plain())
+    }
+
+    /// The inverse of [`SettingsKey::to_secret`].
+    pub fn from_secret(p: &[u8]) -> Result<Self> {
+        Self::from_plain(p)
     }
 
     fn to_plain(&self) -> Vec<u8> {
