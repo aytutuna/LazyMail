@@ -33,6 +33,11 @@ pub enum Update {
     DownloadLimit {
         resume_at: SystemTime,
     },
+    /// One folder could not be synced; the others were.
+    FolderFailed {
+        folder: String,
+        reason: String,
+    },
 }
 
 /// Waits 1 s after the first failure and doubles up to 5 minutes.
@@ -203,15 +208,23 @@ impl<T: TokenSource> Imap<T> {
         let _one_at_a_time = self.sync_lock.lock().await;
         let folders = folders::refresh(conn, &self.store).await?;
         let mut total = Summary::default();
+        let mut all_looked_at = true;
         for f in &folders {
             match self.sync_one(conn, f).await {
                 Ok(s) => total.add(s),
-                // The server refuses this folder (not selectable, say); the others carry on.
-                Err(Error::Refused(_)) => {}
+                // A folder the server refuses or answers oddly must not hold the others back
+                // or make the connection start over.
+                Err(e @ (Error::Refused(_) | Error::Protocol(_))) => {
+                    all_looked_at = false;
+                    let _ = self.updates.send(Update::FolderFailed {
+                        folder: f.name.clone(),
+                        reason: e.to_string(),
+                    });
+                }
                 Err(e) => return Err(e),
             }
         }
-        if self.server.gmail {
+        if self.server.gmail && all_looked_at {
             total.removed += drop_unplaced(&self.store)?;
         }
         Ok(total)
@@ -304,7 +317,6 @@ impl<T: TokenSource> Imap<T> {
         backoff: &mut Backoff,
     ) -> Result<()> {
         let mut conn = self.connect().await?;
-        backoff.reset();
         let watched = folder.unwrap_or("INBOX");
         if folder.is_none() {
             self.sync_all(&mut conn).await?;
@@ -322,6 +334,9 @@ impl<T: TokenSource> Imap<T> {
                 synced = Some(now);
                 continue;
             }
+            // Only a connection that is synced and settled starts the pauses over, so a failure
+            // that comes back every time does not log in again once a second.
+            backoff.reset();
             if !conn.caps.idle {
                 tokio::select! {
                     _ = tokio::time::sleep(POLL) => {}

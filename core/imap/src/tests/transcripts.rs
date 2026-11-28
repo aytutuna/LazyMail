@@ -575,3 +575,50 @@ async fn without_uidplus_other_deleted_messages_are_not_expunged_with_ours() {
     drop(conn);
     replay.finish().unwrap();
 }
+
+#[tokio::test]
+async fn a_folder_that_answers_oddly_does_not_stop_the_others() {
+    let script = format!(
+        "S: * OK The Microsoft Exchange IMAP4 service is ready.\n\
+         C: <tag> AUTHENTICATE XOAUTH2\n\
+         S: +\n\
+         C: {}\n\
+         S: <tag> OK [CAPABILITY IMAP4rev1] authenticated\n\
+         C: <tag> CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev1\n\
+         S: <tag> OK done\n\
+         C: <tag> LIST \"\" \"*\"\n\
+         S: * LIST () \"/\" \"INBOX\"\n\
+         S: * LIST () \"/\" \"Archive\"\n\
+         S: <tag> OK done\n\
+         C: <tag> SELECT \"INBOX\"\n\
+         S: * 0 EXISTS\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> SELECT \"Archive\"\n\
+         S: * 0 EXISTS\n\
+         S: * OK [UIDVALIDITY 5] ok\n\
+         S: * OK [UIDNEXT 1] ok\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH\n\
+         S: <tag> OK done\n",
+        xoauth2_base64("u@contoso.example", "access-1")
+    );
+    let replay = serve(&script);
+    let tokens = StaticTokens::default();
+    tokens.set("o1", Resource::Mail, Ok("access-1".into()));
+    let (imap, _account, mut rx, _signin, _dir) = outlook_imap(&replay, tokens);
+    let mut conn = imap.connect().await.unwrap();
+    imap.sync_all(&mut conn).await.unwrap();
+    let mut seen = Vec::new();
+    while let Ok(u) = rx.try_recv() {
+        match u {
+            Update::FolderFailed { folder, .. } => seen.push(format!("failed {folder}")),
+            Update::Synced { folder, .. } => seen.push(format!("synced {folder}")),
+            _ => {}
+        }
+    }
+    assert_eq!(seen, ["failed INBOX", "synced Archive"]);
+    drop(conn);
+    replay.finish().unwrap();
+}
