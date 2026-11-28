@@ -36,6 +36,7 @@ pub(crate) enum Wire {
     Join(JoinRequest),
     Offer(JoinOffer),
     Approval(Approval),
+    Reveal(JoinReveal),
     Rotation(Rotation),
     Recovery {
         #[serde(with = "b64")]
@@ -169,6 +170,10 @@ pub(crate) struct JoinRequest {
     pub ed_pub: [u8; 32],
     #[serde(with = "b64")]
     pub nonce: [u8; 16],
+    /// Hash of a secret the device publishes only once someone offers, so
+    /// nobody can pick their own request to fit a code.
+    #[serde(with = "b64")]
+    pub commit: [u8; 32],
     pub at: u64,
     #[serde(with = "b64")]
     pub sig: [u8; 64],
@@ -182,6 +187,7 @@ impl JoinRequest {
             &self.x_pub,
             &self.ed_pub,
             &self.nonce,
+            &self.commit,
             &self.at.to_le_bytes(),
             self.name.as_bytes(),
         ]
@@ -198,6 +204,11 @@ impl JoinRequest {
 pub(crate) struct JoinOffer {
     #[serde(with = "b64")]
     pub nonce: [u8; 16],
+    #[serde(with = "b64")]
+    pub commit: [u8; 32],
+    /// The approver's own random share of the code.
+    #[serde(with = "b64")]
+    pub anonce: [u8; 16],
     pub from: DeviceId,
     pub name: String,
     #[serde(with = "b64")]
@@ -213,6 +224,8 @@ impl JoinOffer {
         [
             b"lazymail offer v1".as_slice(),
             &self.nonce,
+            &self.commit,
+            &self.anonce,
             &self.from.0,
             &self.x_pub,
             &self.ed_pub,
@@ -231,6 +244,10 @@ impl JoinOffer {
 pub(crate) struct Approval {
     #[serde(with = "b64")]
     pub nonce: [u8; 16],
+    #[serde(with = "b64")]
+    pub commit: [u8; 32],
+    #[serde(with = "b64")]
+    pub anonce: [u8; 16],
     pub to: DeviceId,
     pub from: DeviceId,
     pub wrap: Wrap,
@@ -243,12 +260,23 @@ impl Approval {
         [
             b"lazymail approval v1".as_slice(),
             &self.nonce,
+            &self.commit,
+            &self.anonce,
             &self.to.0,
             &self.from.0,
             &self.wrap.sig_bytes(),
         ]
         .concat()
     }
+}
+
+/// The secret behind a request's commitment.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct JoinReveal {
+    #[serde(with = "b64")]
+    pub nonce: [u8; 16],
+    #[serde(with = "b64")]
+    pub secret: [u8; 16],
 }
 
 /// The key for the next epoch, wrapped once per device that stays. `proof`

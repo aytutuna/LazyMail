@@ -84,6 +84,12 @@ pub enum Error {
     NoApproval,
     #[error("the devices in the folder are not the ones that were shown")]
     DevicesChanged,
+    #[error("the new device has not answered this device's offer yet")]
+    NotRevealed,
+    #[error("two devices show the same code; start again")]
+    AmbiguousCode,
+    #[error("that key did not come from this person's devices")]
+    UntrustedKey,
     #[error("a message could not be read")]
     Corrupt,
 }

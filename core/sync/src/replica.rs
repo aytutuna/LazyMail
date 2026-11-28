@@ -41,6 +41,9 @@ pub(crate) enum Meta {
     Offer {
         nonce: [u8; 16],
     },
+    Reveal {
+        nonce: [u8; 16],
+    },
     Approval,
     Rotation,
     Recovery,
@@ -137,6 +140,16 @@ impl<F: Folder> Replica<F> {
         self.key = Some(key);
         self.rejoin = false;
         self.seen.clear();
+    }
+
+    /// Drops a key that turned out not to be the person's, and what was read with it.
+    pub(crate) fn forget_key(&mut self) {
+        self.key = None;
+        self.rejoin = false;
+        self.seen.clear();
+        self.entries.clear();
+        self.devices.clear();
+        self.leases.clear();
     }
 
     /// Like `set_key`, and moves what the folder holds under the new key. Done
@@ -345,7 +358,13 @@ impl<F: Folder> Replica<F> {
             self.seen.retain(|id, _| live.contains(id.as_str()));
             self.join
                 .requests
-                .retain(|_, (_, id)| live.contains(id.as_str()));
+                .retain(|_, s| live.contains(s.id.as_str()));
+            self.join
+                .reveals
+                .retain(|(_, id)| live.contains(id.as_str()));
+            self.join
+                .approvals
+                .retain(|(_, id)| live.contains(id.as_str()));
             self.drop_dead_leases();
             let mut rotations = Vec::new();
             for id in &ids {
@@ -385,6 +404,7 @@ impl<F: Folder> Replica<F> {
                 .values()
                 .any(|m| matches!(m, Meta::Foreign { epoch, .. } if *epoch > k.epoch));
         }
+        self.reveal_to_offers().await?;
         Ok(Pulled {
             changed,
             needs_rejoin: self.rejoin,
@@ -412,28 +432,8 @@ impl<F: Folder> Replica<F> {
                 from,
                 data,
             } => self.ingest_sealed(id, what, epoch, from, &data),
-            Wire::Join(r) => {
-                if r.valid() {
-                    self.join.requests.insert(r.nonce, (r, id.clone()));
-                }
-                self.seen.insert(id, Meta::Join);
-                0
-            }
-            Wire::Offer(o) => {
-                if self.join.pending == Some(o.nonce)
-                    && o.valid()
-                    && !self.join.offers.iter().any(|x| x.from == o.from)
-                {
-                    self.join.offers.push(o.clone());
-                }
-                self.seen.insert(id, Meta::Offer { nonce: o.nonce });
-                0
-            }
-            Wire::Approval(a) => {
-                if self.join.pending == Some(a.nonce) && a.to == self.me.id() {
-                    self.join.approval = Some((a, id.clone()));
-                }
-                self.seen.insert(id, Meta::Approval);
+            Wire::Join(_) | Wire::Offer(_) | Wire::Approval(_) | Wire::Reveal(_) => {
+                self.ingest_join(id, wire);
                 0
             }
             Wire::Recovery { .. } => {

@@ -216,21 +216,34 @@ impl Drop for RecoveryCode {
     }
 }
 
-/// Four digits both screens show. They match only if both devices saw the
-/// same two key pairs and the same request.
+pub(crate) fn commit_to(secret: &[u8; 16]) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(b"lazymail join commit v1")
+        .chain_update(secret)
+        .finalize()
+        .into()
+}
+
+/// Four digits both screens show. The new device's secret was committed to
+/// before the approver's share existed, so neither side can steer the result;
+/// they match only if both saw the same keys and the same request.
 pub(crate) fn join_code(
+    secret: &[u8; 16],
+    anonce: &[u8; 16],
     nonce: &[u8; 16],
     new: (&[u8; 32], &[u8; 32]),
     approver: (&[u8; 32], &[u8; 32]),
 ) -> String {
     let d = Sha256::new()
-        .chain_update(b"lazymail join code v1")
+        .chain_update(b"lazymail join code v2")
+        .chain_update(secret)
+        .chain_update(anonce)
         .chain_update(nonce)
         .chain_update(new.0)
         .chain_update(new.1)
         .chain_update(approver.0)
         .chain_update(approver.1)
         .finalize();
-    let n = u32::from_le_bytes(d[..4].try_into().unwrap()) % 10_000;
+    let n = u64::from_le_bytes(d[..8].try_into().unwrap()) % 10_000;
     format!("{n:04}")
 }

@@ -51,10 +51,12 @@ async fn join(host: &mut R, folder: &MemoryFolder, time: &Time, name: &str, skew
     host.offer_join(req.nonce).await.unwrap();
     new.pull().await.unwrap();
     let offer = new.join_offers().pop().unwrap();
-    assert_eq!(offer.code, host.join_code(req.nonce).unwrap());
+    host.pull().await.unwrap();
+    let shown = host.join_code(req.nonce).unwrap();
+    assert_eq!(offer.code, shown);
     host.approve_join(req.nonce, &offer.code).await.unwrap();
     new.pull().await.unwrap();
-    new.finish_join(offer.device).await.unwrap();
+    new.finish_join(offer.device, &shown).await.unwrap();
     host.pull().await.unwrap();
     new
 }
@@ -222,7 +224,13 @@ async fn a_wrong_code_is_refused_and_three_void_the_request() {
         Err(Error::NoOffer)
     ));
     a.offer_join(nonce).await.unwrap();
+    // The new device has not published its secret yet, so there is no code.
+    assert!(matches!(
+        a.approve_join(nonce, "0000").await,
+        Err(Error::NotRevealed)
+    ));
     new.pull().await.unwrap();
+    a.pull().await.unwrap();
     let code = new.join_offers()[0].code.clone();
     let wrong = if code == "0000" { "0001" } else { "0000" };
     assert!(matches!(
@@ -244,39 +252,99 @@ async fn a_wrong_code_is_refused_and_three_void_the_request() {
     ));
     new.pull().await.unwrap();
     let who = new.join_offers()[0].device;
-    assert!(matches!(new.finish_join(who).await, Err(Error::NoApproval)));
+    assert!(matches!(
+        new.finish_join(who, &code).await,
+        Err(Error::NoApproval)
+    ));
     assert!(new.key().is_none());
 }
 
 #[tokio::test]
-async fn an_offer_from_a_stranger_cannot_hand_over_a_key() {
+async fn the_new_device_needs_the_code_of_the_device_it_trusts() {
     let time = Time::new();
     let folder = MemoryFolder::new();
     let mut a = first(&folder, &time, "laptop").await;
     let mut new = Replica::new(folder.clone(), Identity::generate("phone"), time.clock(0));
     new.request_join().await.unwrap();
+    a.pull().await.unwrap();
+    let nonce = a.join_requests()[0].nonce;
+    a.offer_join(nonce).await.unwrap();
+    new.pull().await.unwrap();
+    a.pull().await.unwrap();
+    let shown = a.join_code(nonce).unwrap();
+    a.approve_join(nonce, &shown).await.unwrap();
+    new.pull().await.unwrap();
+    let who = new.join_offers()[0].device;
+    let wrong = if shown == "0000" { "0001" } else { "0000" };
+    assert!(matches!(
+        new.finish_join(who, wrong).await,
+        Err(Error::WrongCode)
+    ));
+    assert!(new.key().is_none());
+    new.finish_join(who, &shown).await.unwrap();
+    assert!(new.key().is_some());
+}
 
-    // Someone with access to the mailbox but not the key plays approver.
-    let mut rogue = Replica::new(folder.clone(), Identity::generate("rogue"), time.clock(0));
-    let rogue_key = {
+#[tokio::test]
+async fn a_rogue_key_at_an_unused_epoch_is_not_taken() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let mut a = first(&folder, &time, "laptop").await;
+    a.set("theme", "dark").await.unwrap();
+    let mut new = Replica::new(folder.clone(), Identity::generate("phone"), time.clock(0));
+    new.request_join().await.unwrap();
+
+    // Someone with the mailbox password but not the key plays approver, with a
+    // key of their own at an epoch the folder does not use.
+    let mut rogue = Replica::new(folder.clone(), Identity::generate("laptop"), time.clock(0));
+    let mut raw = {
         let other = MemoryFolder::new();
-        first(&other, &time, "x").await.key().unwrap().clone()
+        first(&other, &time, "x")
+            .await
+            .key()
+            .unwrap()
+            .to_secret()
+            .to_vec()
     };
-    rogue.set_key(rogue_key);
+    raw[0] = 7;
+    rogue.set_key(SettingsKey::from_secret(&raw).unwrap());
+    a.pull().await.unwrap();
     rogue.pull().await.unwrap();
-    let nonce = rogue.join_requests()[0].nonce;
+    let nonce = a.join_requests()[0].nonce;
+    a.offer_join(nonce).await.unwrap();
     rogue.offer_join(nonce).await.unwrap();
     new.pull().await.unwrap();
-    let code = rogue.join_code(nonce).unwrap();
-    rogue.approve_join(nonce, &code).await.unwrap();
-
-    new.pull().await.unwrap();
-    let rogue_id = rogue.id();
-    let res = new.finish_join(rogue_id).await;
-    assert!(matches!(res, Err(Error::Corrupt)), "{res:?}");
-    assert!(new.key().is_none());
-    assert_ne!(a.id(), rogue_id);
     a.pull().await.unwrap();
+    rogue.pull().await.unwrap();
+    let offers = new.join_offers();
+    assert_eq!(offers.len(), 2);
+    let real = offers.iter().find(|o| o.device == a.id()).unwrap().clone();
+    let fake = offers
+        .iter()
+        .find(|o| o.device == rogue.id())
+        .unwrap()
+        .clone();
+
+    // The real approval comes first, the rogue's after it.
+    a.approve_join(nonce, &real.code).await.unwrap();
+    rogue.approve_join(nonce, &fake.code).await.unwrap();
+    new.pull().await.unwrap();
+
+    // The person typed what the real laptop shows, so naming the rogue fails.
+    let res = new.finish_join(rogue.id(), &real.code).await;
+    assert!(matches!(res, Err(Error::WrongCode)), "{res:?}");
+    // Even a person who confirmed the rogue's code gets no key: nothing in the
+    // folder was ever sealed under it by the rogue's device.
+    let res = new.finish_join(rogue.id(), &fake.code).await;
+    assert!(matches!(res, Err(Error::UntrustedKey)), "{res:?}");
+    assert!(new.key().is_none());
+    assert_eq!(new.entries().count(), 0);
+    assert!(new.devices().is_empty());
+
+    // The real approval was not displaced by the later one.
+    new.finish_join(a.id(), &real.code).await.unwrap();
+    assert_eq!(new.key().unwrap().epoch(), 1);
+    assert_eq!(new.get("theme"), Some("dark"));
 }
 
 #[tokio::test]
@@ -350,9 +418,11 @@ async fn a_new_key_names_what_the_others_lose() {
     lost.offer_join(nonce).await.unwrap();
     a2.pull().await.unwrap();
     let offer = a2.join_offers().pop().unwrap();
+    lost.pull().await.unwrap();
+    let shown = lost.join_code(nonce).unwrap();
     lost.approve_join(nonce, &offer.code).await.unwrap();
     a2.pull().await.unwrap();
-    a2.finish_join(offer.device).await.unwrap();
+    a2.finish_join(offer.device, &shown).await.unwrap();
     assert_eq!(a2.key().unwrap().epoch(), 2);
 }
 
