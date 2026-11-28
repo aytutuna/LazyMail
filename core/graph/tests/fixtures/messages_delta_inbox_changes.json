@@ -1,0 +1,16 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.message)",
+  "@odata.deltaLink": "{{base}}/me/mailFolders/inbox-id/messages/delta?$deltatoken=inbox-2",
+  "value": [
+    {
+      "id": "AAMkAGI2TGuLAAA=",
+      "isRead": true,
+      "isDraft": false,
+      "flag": { "flagStatus": "flagged" }
+    },
+    {
+      "id": "AAMkAGI2TGuMAAA=",
+      "@removed": { "reason": "deleted" }
+    }
+  ]
+}

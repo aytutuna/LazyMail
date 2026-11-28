@@ -1,0 +1,8 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.mailFolder)",
+  "@odata.deltaLink": "{{base}}/me/mailFolders/delta?$deltatoken=folders-2",
+  "value": [
+    { "id": "projects-id", "displayName": "Projects 2026" },
+    { "id": "junk-id", "@removed": { "reason": "deleted" } }
+  ]
+}

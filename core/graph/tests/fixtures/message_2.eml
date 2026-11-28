@@ -1,0 +1,22 @@
+From: Alex Wilber <alexw@contoso.example>
+To: Adele Vance <adelev@contoso.example>, lynne@contoso.example
+Cc: diego@contoso.example
+Subject: Re: Meeting notes
+Message-ID: <9c1d77@contoso.example>
+In-Reply-To: <4f8e2a@contoso.example>
+References: <4f8e2a@contoso.example>
+Date: Sun, 1 Mar 2026 11:30:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix1"
+
+--mix1
+Content-Type: text/plain; charset=utf-8
+
+Thanks, the agenda is attached.
+--mix1
+Content-Type: application/pdf; name="agenda.pdf"
+Content-Disposition: attachment; filename="agenda.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJSVFT0YK
+--mix1--

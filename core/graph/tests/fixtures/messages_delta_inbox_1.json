@@ -1,0 +1,37 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.message)",
+  "@odata.nextLink": "{{base}}/me/mailFolders/inbox-id/messages/delta?$skiptoken=inbox-p2",
+  "value": [
+    {
+      "id": "AAMkAGI2TGuLAAA=",
+      "internetMessageId": "<4f8e2a@contoso.example>",
+      "subject": "Meeting notes",
+      "receivedDateTime": "2026-03-01T10:00:00Z",
+      "isRead": false,
+      "isDraft": false,
+      "flag": { "flagStatus": "notFlagged" },
+      "from": { "emailAddress": { "name": "Adele Vance", "address": "adelev@contoso.example" } },
+      "toRecipients": [
+        { "emailAddress": { "name": "Alex Wilber", "address": "alexw@contoso.example" } }
+      ],
+      "ccRecipients": []
+    },
+    {
+      "id": "AAMkAGI2TGuMAAA=",
+      "internetMessageId": "<9c1d77@contoso.example>",
+      "subject": "Re: Meeting notes",
+      "receivedDateTime": "2026-03-01T11:30:00Z",
+      "isRead": true,
+      "isDraft": false,
+      "flag": { "flagStatus": "flagged" },
+      "from": { "emailAddress": { "name": "Alex Wilber", "address": "alexw@contoso.example" } },
+      "toRecipients": [
+        { "emailAddress": { "name": "Adele Vance", "address": "adelev@contoso.example" } },
+        { "emailAddress": { "name": "lynne@contoso.example", "address": "lynne@contoso.example" } }
+      ],
+      "ccRecipients": [
+        { "emailAddress": { "name": "", "address": "diego@contoso.example" } }
+      ]
+    }
+  ]
+}

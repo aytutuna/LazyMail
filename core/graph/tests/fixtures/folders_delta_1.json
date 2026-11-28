@@ -1,0 +1,9 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.mailFolder)",
+  "@odata.nextLink": "{{base}}/me/mailFolders/delta?$skiptoken=folders-p2",
+  "value": [
+    { "id": "inbox-id", "displayName": "Inbox" },
+    { "id": "sent-id", "displayName": "Sent Items" },
+    { "id": "drafts-id", "displayName": "Drafts" }
+  ]
+}

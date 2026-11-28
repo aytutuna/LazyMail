@@ -1,0 +1,18 @@
+Received: from mail.contoso.example by contoso.example; Sun, 1 Mar 2026 10:00:00 +0000
+From: Adele Vance <adelev@contoso.example>
+To: Alex Wilber <alexw@contoso.example>
+Subject: Meeting notes
+Message-ID: <4f8e2a@contoso.example>
+Date: Sun, 1 Mar 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt1"
+
+--alt1
+Content-Type: text/plain; charset=utf-8
+
+Notes from today's meeting are below.
+--alt1
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Notes from today's meeting are below.</p></body></html>
+--alt1--
