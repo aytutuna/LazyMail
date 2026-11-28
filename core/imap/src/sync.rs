@@ -251,6 +251,18 @@ pub(crate) async fn sync_folder(
         }
     }
 
+    // Saved before the bodies: a body that cannot be fetched must not keep the folder from
+    // looking settled, and the scan below finds the rows still missing one.
+    store.lock().unwrap().set_sync_state(
+        folder.id,
+        &SyncState {
+            uidvalidity: Some(sel.validity),
+            uidnext: sel.uidnext.or(Some(1)),
+            highestmodseq: sel.modseq,
+            delta_link: None,
+        },
+    )?;
+
     // An earlier run may have stopped between headers and bodies, in a folder that was already
     // complete as much as in a new one, so rows without a body are looked for every time.
     let since = policy.body_days.map(|d| now - i64::from(d) * 86400);
@@ -273,16 +285,6 @@ pub(crate) async fn sync_folder(
     if let Some(since) = since {
         store.lock().unwrap().prune_bodies(since)?;
     }
-
-    store.lock().unwrap().set_sync_state(
-        folder.id,
-        &SyncState {
-            uidvalidity: Some(sel.validity),
-            uidnext: sel.uidnext.or(Some(1)),
-            highestmodseq: sel.modseq,
-            delta_link: None,
-        },
-    )?;
     Ok(summary)
 }
 
@@ -431,10 +433,7 @@ async fn fetch_bodies(
         .collect();
     let mut layouts: HashMap<u32, Layout> = HashMap::new();
     for chunk in unknown.chunks(200) {
-        let reply = conn
-            .exec(&format!("UID FETCH {} (BODYSTRUCTURE)", uid_set(chunk)))
-            .await?;
-        for (uid, f) in reply.fetched_for(chunk) {
+        for (uid, f) in fetch_each_on_refusal(conn, chunk, "BODYSTRUCTURE").await? {
             if let Some(l) = f.layout {
                 layouts.insert(uid, l);
             }
@@ -466,10 +465,7 @@ async fn fetch_bodies(
             if !parts.is_empty() {
                 let items = parse::part_items(parts.iter().copied());
                 let uids: Vec<u32> = chunk.iter().map(|p| p.uid).collect();
-                let reply = conn
-                    .exec(&format!("UID FETCH {} ({})", uid_set(&uids), items))
-                    .await?;
-                got = reply.fetched_for(&uids);
+                got = fetch_each_on_refusal(conn, &uids, &items).await?;
             }
             let s = store.lock().unwrap();
             s.atomic(|s| {
@@ -493,6 +489,35 @@ async fn fetch_bodies(
         }
     }
     Ok(())
+}
+
+/// UID FETCH of `items`. A server that refuses the batch (Exchange cannot convert some
+/// corrupt messages) is asked again one message at a time, and the ones it still refuses are
+/// left out, so one message does not hold back the rest.
+async fn fetch_each_on_refusal(
+    conn: &mut Connection,
+    uids: &[u32],
+    items: &str,
+) -> Result<HashMap<u32, Fetched>> {
+    match conn
+        .exec(&format!("UID FETCH {} ({items})", uid_set(uids)))
+        .await
+    {
+        Ok(reply) => Ok(reply.fetched_for(uids)),
+        Err(crate::Error::Refused(_)) if uids.len() > 1 => {
+            let mut got = HashMap::new();
+            for uid in uids {
+                match conn.exec(&format!("UID FETCH {uid} ({items})")).await {
+                    Ok(reply) => got.extend(reply.fetched_for(&[*uid])),
+                    Err(crate::Error::Refused(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(got)
+        }
+        Err(crate::Error::Refused(_)) => Ok(HashMap::new()),
+        Err(e) => Err(e),
+    }
 }
 
 fn join_parts(f: Option<&Fetched>, parts: &[String]) -> String {

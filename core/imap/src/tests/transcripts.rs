@@ -774,3 +774,45 @@ async fn a_session_whose_inbox_will_not_select_still_syncs_the_other_folders() {
         .unwrap();
     drop(replay);
 }
+
+#[tokio::test]
+async fn a_message_the_server_cannot_fetch_does_not_hold_back_the_folder() {
+    let items = "BODY.PEEK[1.MIME] BODY.PEEK[1] BODY.PEEK[HEADER]";
+    let script = format!(
+        "{}C: <tag> SELECT \"Inbox\"\n\
+         S: * 2 EXISTS\n\
+         S: * OK [UIDVALIDITY 5] ok\n\
+         S: * OK [UIDNEXT 3] ok\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH 1 2\n\
+         S: <tag> OK done\n\
+         C: <tag> UID FETCH 1:2 (UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER] BODYSTRUCTURE)\n\
+         {}\n{}\n\
+         S: <tag> OK done\n\
+         C: <tag> UID FETCH 1:2 ({items})\n\
+         S: <tag> NO The message could not be converted to an RFC-822 compatible format.\n\
+         C: <tag> UID FETCH 2 ({items})\n\
+         {}\n\
+         S: <tag> OK done\n\
+         C: <tag> UID FETCH 1 ({items})\n\
+         S: <tag> NO The message could not be converted to an RFC-822 compatible format.\n",
+        login("IMAP4rev1"),
+        header_fetch(1, 1, "", ""),
+        header_fetch(2, 2, "", ""),
+        body_fetch(2, 2),
+    );
+    let replay = serve(&script);
+    let mut conn = open(&replay, Provider::Other, false).await.unwrap();
+    let (_dir, store) = store();
+    let s = sync_named(&mut conn, &store, "Inbox", &Policy::default()).await;
+    assert_eq!(s.added, 2);
+    let f = store.lock().unwrap().folders().unwrap().remove(0);
+    let mut m = rows(&store, &f);
+    m.sort_by_key(|m| m.uid);
+    assert_eq!(m[0].body_text, None);
+    assert!(m[1].body_text.is_some());
+    assert_eq!(f.sync.uidnext, Some(3));
+    drop(conn);
+    replay.finish().unwrap();
+}
