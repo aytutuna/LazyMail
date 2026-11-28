@@ -36,8 +36,10 @@ impl SystemNetwork {
     }
 }
 
-fn tls_config() -> ClientConfig {
-    ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+/// The TLS settings of every mail connection: aws-lc-rs for the cryptography and the system's
+/// verifier for certificates.
+pub fn tls_config() -> ClientConfig {
+    ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
         .with_safe_default_protocol_versions()
         .expect("tls versions")
         .with_platform_verifier()

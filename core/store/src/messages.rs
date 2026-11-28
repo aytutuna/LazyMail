@@ -387,6 +387,77 @@ impl Store {
             .optional()?)
     }
 
+    /// Messages of the folder that have a UID but no body yet and are dated `since` or later
+    /// (all of them for None): (row id, UID, date), for finishing a download that was cut off.
+    pub fn without_bodies(
+        &self,
+        folder_id: i64,
+        since: Option<i64>,
+    ) -> Result<Vec<(i64, u32, i64)>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, uid, date FROM messages
+             WHERE folder_id = ?1 AND uid IS NOT NULL AND body_text IS NULL AND body_html IS NULL
+               AND date >= ?2",
+        )?;
+        let rows = st.query_map(params![folder_id, since.unwrap_or(i64::MIN)], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A row in the folder that has no UID yet and carries this Message-ID: a message moved
+    /// here when the server did not say what UID it got.
+    pub fn find_unplaced(&self, folder_id: i64, message_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM messages
+                 WHERE folder_id = ?1 AND uid IS NULL AND gm_msgid IS NULL AND message_id = ?2",
+                params![folder_id, message_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Gmail's message id of a row, when it has one.
+    pub fn gm_msgid(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT gm_msgid FROM messages WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Rows in the folder that wait for a UID (not Gmail's, which `unplaced_gmail` covers).
+    pub fn unplaced(&self, folder_id: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT id FROM messages
+             WHERE folder_id = ?1 AND uid IS NULL AND gm_msgid IS NULL",
+        )?;
+        let rows = st.query_map([folder_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The labels of one message, sorted.
+    pub fn labels(&self, id: i64) -> Result<Vec<String>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT label FROM labels WHERE message_id = ?1 ORDER BY label")?;
+        let rows = st.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Gmail messages whose row has lost its UID because no folder listed them any more.
+    pub fn unplaced_gmail(&self) -> Result<Vec<i64>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM messages WHERE gm_msgid IS NOT NULL AND uid IS NULL")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Every UID in the folder with its flags, for comparing against the server.
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<(u32, Flags)>> {
         let mut st = self.conn.prepare(
