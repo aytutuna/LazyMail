@@ -20,6 +20,8 @@ const IDLE_MAX: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_secs(5 * 60);
 const PAUSED_CHECK: Duration = Duration::from_secs(60);
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long an action waits for one of the account's connections before giving up.
+const PERMIT_WAIT: Duration = Duration::from_secs(30);
 
 /// What the app should show or act on, sent as it happens.
 #[derive(Debug)]
@@ -75,6 +77,8 @@ pub struct Imap<T> {
     sync_lock: tokio::sync::Mutex<()>,
     // Gmail allows three connections per account and device; other providers have their own.
     connections: Arc<tokio::sync::Semaphore>,
+    // Folder watchers beyond the first connection; one connection is always left for actions.
+    watch_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl<T: TokenSource> Imap<T> {
@@ -105,6 +109,7 @@ impl<T: TokenSource> Imap<T> {
             verified: AtomicBool::new(false),
             sync_lock: tokio::sync::Mutex::new(()),
             connections: Arc::new(tokio::sync::Semaphore::new(limit as usize)),
+            watch_slots: Arc::new(tokio::sync::Semaphore::new((limit as usize).saturating_sub(2))),
         })
     }
 
@@ -174,12 +179,13 @@ impl<T: TokenSource> Imap<T> {
                 }
             }
         };
-        let permit = self
-            .connections
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("the semaphore is never closed");
+        let permit = tokio::time::timeout(
+            PERMIT_WAIT,
+            self.connections.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| Error::Busy("every connection of the account is in use".into()))?
+        .expect("the semaphore is never closed");
         let worked = self.verified.load(Ordering::Relaxed);
         match Connection::open(&self.server, &credential, &self.tls, worked).await {
             Ok(mut conn) => {
@@ -281,11 +287,17 @@ impl<T: TokenSource> Imap<T> {
     }
 
     /// Follows one more open folder through IDLE on a connection of its own. Gmail idles on
-    /// the Inbox only, so for Gmail this returns at once.
+    /// the Inbox only, so for Gmail this returns at once, and so it does when the account has no
+    /// connection to spare: the account's limit less one for the main session and one kept free
+    /// for actions.
     pub async fn watch(&self, folder: &str, stop: &Notify) {
-        if !self.server.gmail {
-            self.keep_running(stop, Some(folder)).await
+        if self.server.gmail {
+            return;
         }
+        let Ok(_slot) = self.watch_slots.try_acquire() else {
+            return;
+        };
+        self.keep_running(stop, Some(folder)).await
     }
 
     async fn keep_running(&self, stop: &Notify, folder: Option<&str>) {

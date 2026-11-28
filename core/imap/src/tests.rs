@@ -704,6 +704,47 @@ async fn an_account_never_holds_more_connections_than_its_limit() {
     assert!(fourth.unwrap().is_ok());
 }
 
+#[tokio::test]
+#[ignore]
+async fn watchers_leave_a_connection_free_for_actions() {
+    servers!(env);
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let imap = Arc::new(imap_for(&env, &store, tx));
+    let stop = Arc::new(Notify::new());
+    let mut conn = env.open().await;
+    let (a, b) = (unique("watch-a"), unique("watch-b"));
+    create(&mut conn, &a).await;
+    create(&mut conn, &b).await;
+    let run = {
+        let (imap, stop) = (imap.clone(), stop.clone());
+        tokio::spawn(async move { imap.run(&stop).await })
+    };
+    let first = {
+        let (imap, stop) = (imap.clone(), stop.clone());
+        tokio::spawn(async move { imap.watch(&a, &stop).await })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The account allows three connections: the main session, one watcher, one for actions.
+    let second = {
+        let (imap, stop) = (imap.clone(), stop.clone());
+        tokio::spawn(async move { imap.watch(&b, &stop).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("a watcher without a spare connection returns")
+        .unwrap();
+    let action = tokio::time::timeout(Duration::from_secs(5), imap.connect()).await;
+    assert!(action.expect("an action finds a connection").is_ok());
+    stop.notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        let _ = run.await;
+        let _ = first.await;
+    })
+    .await;
+}
+
 // "Wed, 01 Jan 2020 10:00:00 +0000" for a unix time.
 fn chrono_like(t: i64) -> String {
     let days = t.div_euclid(86400);
