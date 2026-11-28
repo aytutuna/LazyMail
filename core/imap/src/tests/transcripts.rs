@@ -262,6 +262,72 @@ async fn a_message_that_moves_folder_keeps_its_row() {
     replay.finish().unwrap();
 }
 
+// All Mail looked at again after the message left it (deleted in the web app, say).
+fn all_mail_emptied() -> String {
+    format!(
+        "{}C: <tag> UID FETCH 1:* (FLAGS X-GM-LABELS) (CHANGEDSINCE 1873)\n\
+         S: <tag> OK Success\n\
+         C: <tag> UID SEARCH UID 2:*\n\
+         S: * SEARCH\n\
+         S: <tag> OK Success\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH\n\
+         S: <tag> OK Success\n",
+        select("[Gmail]/All Mail", 5, 0, 2, 1900)
+    )
+}
+
+#[tokio::test]
+async fn a_message_deleted_elsewhere_keeps_its_row_when_trash_is_synced_after_all_mail() {
+    let trash = format!(
+        "{}{}C: <tag> UID SEARCH ALL\nS: * SEARCH 4\nS: <tag> OK Success\n\
+         C: <tag> UID FETCH 4 {HEADER_FETCH_ITEMS}\n{}\nS: <tag> OK Success\n",
+        all_mail_emptied(),
+        select("[Gmail]/Trash", 8, 1, 5, 99),
+        header_fetch(
+            1,
+            4,
+            "\\Seen",
+            r#"X-GM-MSGID 1750000000000000011 X-GM-LABELS ("\\Trash")"#
+        ),
+    );
+    let replay = serve(&all_mail_script(&trash));
+    let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
+    let (_dir, store) = store();
+    sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
+    let id = store
+        .lock()
+        .unwrap()
+        .find_by_gm_msgid(1_750_000_000_000_000_011)
+        .unwrap()
+        .unwrap();
+    sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
+    sync_named(&mut conn, &store, "[Gmail]/Trash", &Policy::default()).await;
+    assert_eq!(crate::sync::drop_unplaced(&store).unwrap(), 0);
+    let s = store.lock().unwrap();
+    let m = s.message(id).unwrap().unwrap();
+    assert_eq!(m.uid, Some(4));
+    assert_eq!(m.labels, ["\\Trash"]);
+    drop(s);
+    drop(conn);
+    replay.finish().unwrap();
+}
+
+#[tokio::test]
+async fn a_gmail_message_found_in_no_folder_is_dropped_at_the_end() {
+    let replay = serve(&all_mail_script(&all_mail_emptied()));
+    let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
+    let (_dir, store) = store();
+    sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
+    sync_named(&mut conn, &store, "[Gmail]/All Mail", &Policy::default()).await;
+    let gm = 1_750_000_000_000_000_011;
+    assert!(store.lock().unwrap().find_by_gm_msgid(gm).unwrap().is_some());
+    assert_eq!(crate::sync::drop_unplaced(&store).unwrap(), 1);
+    assert!(store.lock().unwrap().find_by_gm_msgid(gm).unwrap().is_none());
+    drop(conn);
+    replay.finish().unwrap();
+}
+
 #[tokio::test]
 async fn gmails_download_limit_ends_the_sync_with_its_own_error() {
     let script = format!(

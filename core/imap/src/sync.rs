@@ -185,13 +185,13 @@ pub(crate) async fn sync_folder(
         }
     }
 
-    let removed = remove_uids(store, folder.id, &mut known, &gone)?;
+    let removed = remove_uids(store, folder.id, &mut known, &gone, gmail)?;
     summary.removed += removed;
 
     let new_uids: Vec<u32> = match &server_all {
         Some(all) => {
             let extra: Vec<u32> = known.keys().copied().filter(|u| !all.contains(u)).collect();
-            summary.removed += remove_uids(store, folder.id, &mut known, &extra)?;
+            summary.removed += remove_uids(store, folder.id, &mut known, &extra, gmail)?;
             all.iter()
                 .copied()
                 .filter(|u| !known.contains_key(u))
@@ -206,7 +206,7 @@ pub(crate) async fn sync_folder(
             if sel.exists as usize != known.len() + new.len() {
                 let all: HashSet<u32> = conn.uid_search("ALL").await?.into_iter().collect();
                 let extra: Vec<u32> = known.keys().copied().filter(|u| !all.contains(u)).collect();
-                summary.removed += remove_uids(store, folder.id, &mut known, &extra)?;
+                summary.removed += remove_uids(store, folder.id, &mut known, &extra, gmail)?;
             }
             new
         }
@@ -358,18 +358,28 @@ fn apply_changes(
     Ok(changed)
 }
 
+/// Takes messages the server no longer lists in this folder out of the store. A Gmail message
+/// deleted or marked spam in another client leaves All Mail before it shows up in Trash or
+/// Spam, so its row is kept without a UID until the other folders have been looked at
+/// (`drop_unplaced`); only rows deleted here are counted.
 fn remove_uids(
     store: &Mutex<Store>,
     folder_id: i64,
     known: &mut HashMap<u32, Flags>,
     uids: &[u32],
+    gmail: bool,
 ) -> Result<u32> {
     let s = store.lock().unwrap();
     let mut n = 0;
     s.atomic(|s| {
         for u in uids {
             known.remove(u);
-            if let Some(id) = s.find_by_uid(folder_id, *u)? {
+            let Some(id) = s.find_by_uid(folder_id, *u)? else {
+                continue;
+            };
+            if gmail && s.message(id)?.is_some_and(|m| m.gm_msgid.is_some()) {
+                s.set_ids(id, None, None)?;
+            } else {
                 s.delete_message(id)?;
                 n += 1;
             }
@@ -499,4 +509,17 @@ pub(crate) async fn fetch_part(
         return Err(crate::Error::Protocol("the part is missing".into()));
     };
     Ok(parse::decode_bytes(mime, body))
+}
+
+/// Deletes the Gmail rows that no folder listed again after `remove_uids` let go of their UID.
+pub(crate) fn drop_unplaced(store: &Mutex<Store>) -> Result<u32> {
+    let s = store.lock().unwrap();
+    s.atomic(|s| {
+        let ids = s.unplaced_gmail()?;
+        for id in &ids {
+            s.delete_message(*id)?;
+        }
+        Ok(ids.len() as u32)
+    })
+    .map_err(Into::into)
 }

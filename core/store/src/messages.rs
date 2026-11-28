@@ -405,6 +405,15 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Gmail messages whose row has lost its UID because no folder listed them any more.
+    pub fn unplaced_gmail(&self) -> Result<Vec<i64>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM messages WHERE gm_msgid IS NOT NULL AND uid IS NULL")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Every UID in the folder with its flags, for comparing against the server.
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<(u32, Flags)>> {
         let mut st = self.conn.prepare(

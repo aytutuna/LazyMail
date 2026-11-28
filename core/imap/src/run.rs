@@ -12,7 +12,7 @@ use tokio::sync::{mpsc::UnboundedSender, Notify};
 use crate::conn::{Connection, Credential, IdleEnd, Server};
 use crate::error::{Error, Result};
 use crate::folders;
-use crate::sync::{sync_folder, Policy, Progress, Summary};
+use crate::sync::{drop_unplaced, sync_folder, Policy, Progress, Summary};
 
 /// A server may drop an IDLE that lasts longer than 29 minutes.
 const IDLE_MAX: Duration = Duration::from_secs(25 * 60);
@@ -210,6 +210,9 @@ impl<T: TokenSource> Imap<T> {
                 Err(Error::Refused(_)) => {}
                 Err(e) => return Err(e),
             }
+        }
+        if self.server.gmail {
+            total.removed += drop_unplaced(&self.store)?;
         }
         Ok(total)
     }
