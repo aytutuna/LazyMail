@@ -130,7 +130,7 @@ pub enum Event {
 }
 
 /// Kept by the store between launches, so a restart neither notifies again nor skips the hour.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SignIn {
     states: HashMap<String, AccountState>,
 }

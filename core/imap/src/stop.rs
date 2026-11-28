@@ -21,11 +21,15 @@ impl Stop {
         Stop::default()
     }
 
+    pub fn is_stopped(&self) -> bool {
+        *self.0.borrow()
+    }
+
     pub fn stop(&self) {
         self.0.send_replace(true);
     }
 
-    pub(crate) async fn stopped(&self) {
+    pub async fn stopped(&self) {
         let mut rx = self.0.subscribe();
         let _ = rx.wait_for(|s| *s).await;
     }
