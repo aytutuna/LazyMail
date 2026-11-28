@@ -54,8 +54,19 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    pub(crate) fn aad(self, epoch: u32, from: DeviceId) -> Vec<u8> {
-        format!("lazymail:{self:?}:{epoch}:{from}").into_bytes()
+    fn tag(self) -> &'static str {
+        match self {
+            Kind::Change => "change",
+            Kind::Snapshot => "snapshot",
+            Kind::Device => "device",
+            Kind::Lease => "lease",
+        }
+    }
+
+    /// Binds a message to its kind, its epoch, its sender and the folder it
+    /// was written in, so it opens nowhere else.
+    pub(crate) fn aad(self, epoch: u32, from: DeviceId, scope: &str) -> Vec<u8> {
+        format!("lazymail:{}:{epoch}:{from}:{scope}", self.tag()).into_bytes()
     }
 }
 
@@ -290,7 +301,7 @@ pub(crate) struct Rotation {
 }
 
 impl Rotation {
-    pub(crate) fn aad(epoch: u32, from: DeviceId) -> Vec<u8> {
-        format!("lazymail:rotation:{epoch}:{from}").into_bytes()
+    pub(crate) fn aad(epoch: u32, from: DeviceId, scope: &str) -> Vec<u8> {
+        format!("lazymail:rotation:{epoch}:{from}:{scope}").into_bytes()
     }
 }

@@ -627,6 +627,10 @@ impl Spy {
 }
 
 impl Folder for Spy {
+    fn scope(&self) -> &str {
+        self.inner.scope()
+    }
+
     async fn list(&self) -> Result<Vec<String>, Error> {
         self.inner.list().await
     }

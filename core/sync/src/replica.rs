@@ -200,7 +200,11 @@ impl<F: Folder> Replica<F> {
             if epoch != old.epoch {
                 continue;
             }
-            let Ok(plain) = open(&old.bytes, &what.aad(epoch, from), &data) else {
+            let Ok(plain) = open(
+                &old.bytes,
+                &what.aad(epoch, from, self.folder.scope()),
+                &data,
+            ) else {
                 continue;
             };
             if matches!(what, Kind::Change | Kind::Snapshot) {
@@ -309,7 +313,7 @@ impl<F: Folder> Replica<F> {
         let from = self.me.id();
         let data = seal(
             &key.bytes,
-            &what.aad(key.epoch, from),
+            &what.aad(key.epoch, from, self.folder.scope()),
             &serde_json::to_vec(plain)?,
         );
         let wire = Wire::Sealed {
@@ -466,7 +470,11 @@ impl<F: Folder> Replica<F> {
             self.seen.insert(id, foreign);
             return 0;
         };
-        let Ok(plain) = open(&key.bytes, &what.aad(epoch, from), data) else {
+        let Ok(plain) = open(
+            &key.bytes,
+            &what.aad(epoch, from, self.folder.scope()),
+            data,
+        ) else {
             self.seen.insert(id, foreign);
             return 0;
         };
@@ -539,7 +547,12 @@ impl<F: Folder> Replica<F> {
         if r.epoch != key.epoch + 1 {
             return None;
         }
-        let proof = open(&key.bytes, &Rotation::aad(r.epoch, r.from), &r.proof).ok()?;
+        let proof = open(
+            &key.bytes,
+            &Rotation::aad(r.epoch, r.from, self.folder.scope()),
+            &r.proof,
+        )
+        .ok()?;
         if proof != wraps_digest(&r.wraps) {
             return None;
         }
@@ -730,7 +743,7 @@ impl<F: Folder> Replica<F> {
             from: me,
             proof: seal(
                 &old.bytes,
-                &Rotation::aad(new.epoch, me),
+                &Rotation::aad(new.epoch, me, self.folder.scope()),
                 &wraps_digest(&wraps),
             ),
             wraps,

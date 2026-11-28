@@ -380,3 +380,22 @@ async fn an_old_lease_put_back_does_not_block_the_others() {
     assert_eq!(b.lease_holder(), None);
     assert!(b.hold_lease().await.unwrap());
 }
+
+#[tokio::test]
+async fn a_message_copied_into_another_accounts_folder_is_ignored() {
+    let mail = MemoryFolder::with_scope("one@alazy.app");
+    let other = MemoryFolder::with_scope("two@alazy.app");
+    let (mut a, _) = R::create(mail.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let key = a.key().unwrap().clone();
+    let mut b = Replica::with_key(other.clone(), Identity::generate("phone"), clock(), key);
+    a.set("signature", "Best, A").await.unwrap();
+    for id in mail.list().await.unwrap() {
+        let body = mail.fetch(&id).await.unwrap().unwrap();
+        other.append(body).await.unwrap();
+    }
+    let pulled = b.pull().await.unwrap();
+    assert_eq!(pulled.changed, 0);
+    assert_eq!(b.get("signature"), None);
+}
