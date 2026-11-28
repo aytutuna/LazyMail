@@ -24,7 +24,7 @@ pub struct MoveUndo {
     pub rfc_message_id: Option<String>,
     pub from_folder: i64,
     pub from_uidvalidity: Option<u32>,
-    pub from_uid: Option<u32>,
+    pub from_uid: u32,
     pub to_folder: i64,
     /// Both None when the server gave no COPYUID.
     pub to_uidvalidity: Option<u32>,
@@ -163,7 +163,7 @@ impl Connection {
             rfc_message_id: at.rfc_message_id,
             from_folder: at.folder_id,
             from_uidvalidity: at.uidvalidity,
-            from_uid: Some(at.uid),
+            from_uid: at.uid,
             to_folder,
             to_uidvalidity: moved.map(|m| m.uidvalidity),
             to_uid: moved.map(|m| m.uid),

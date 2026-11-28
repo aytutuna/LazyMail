@@ -553,10 +553,7 @@ async fn a_server_without_move_or_uidplus_copies_then_expunges() {
     let undo = store.lock().unwrap().undo_entries(1001).unwrap();
     let u: crate::MoveUndo = serde_json::from_slice(&undo[0].payload).unwrap();
     assert_eq!(u.rfc_message_id.as_deref(), Some("g1@example.com"));
-    assert_eq!(
-        (u.from_uid, u.to_uid, u.to_uidvalidity),
-        (Some(38), None, None)
-    );
+    assert_eq!((u.from_uid, u.to_uid, u.to_uidvalidity), (38, None, None));
 
     let s = sync_named(&mut conn, &store, "Archive", &Policy::default()).await;
     assert_eq!(s.added, 0);
@@ -875,5 +872,22 @@ async fn a_server_that_stops_answering_during_sign_in_times_out() {
         matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::TimedOut),
         "{err:?}"
     );
+    drop(replay);
+}
+
+#[tokio::test]
+async fn gmails_download_limit_before_the_idle_go_ahead_is_not_a_plain_disconnect() {
+    let script = format!(
+        "{}C: <tag> IDLE\n\
+         S: * BYE [ALERT] Account exceeded command or bandwidth limits.\n",
+        login(GMAIL_CAPS)
+    );
+    let replay = serve(&script);
+    let mut conn = open(&replay, Provider::Gmail, true).await.unwrap();
+    let err = conn
+        .idle(std::time::Duration::from_secs(30), &crate::Stop::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::DownloadLimit), "{err:?}");
     drop(replay);
 }

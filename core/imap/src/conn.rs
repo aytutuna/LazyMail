@@ -446,6 +446,11 @@ impl Connection {
                     information,
                     ..
                 }) if *t == tag => return Err(refusal(information.as_deref().unwrap_or(""))),
+                Some(Response::Data {
+                    status: Status::Bye,
+                    information,
+                    ..
+                }) => return Err(bye(information.as_deref().unwrap_or(""))),
                 Some(
                     Response::MailboxData(MailboxDatum::Exists(_))
                     | Response::Expunge(_)
