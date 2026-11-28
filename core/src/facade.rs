@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use lazymail_sync::{system_clock, Clock};
@@ -57,6 +58,12 @@ impl Core {
     }
 }
 
+impl Drop for Core {
+    fn drop(&mut self) {
+        self.stop_sync();
+    }
+}
+
 #[uniffi::export]
 impl Core {
     /// Opens the core on a folder of its own. The wrapping key protects every secret kept in it;
@@ -107,7 +114,12 @@ impl Core {
     /// Signs in once and saves the account only if that works. The first account with a
     /// mailbox becomes the sync account and starts the settings sync.
     pub fn add_account(&self, setup: AccountSetup) -> Result<AddedAccount, CoreError> {
-        self.run(self.shared.add_account(setup))
+        let added = self.run(self.shared.add_account(setup))?;
+        if self.shared.is_running() {
+            self.shared
+                .start_account(&self.shared.account(&added.account.id)?);
+        }
+        Ok(added)
     }
 
     /// Deletes the account's mail, index and secrets on this device. It never revokes the
@@ -126,6 +138,19 @@ impl Core {
     }
 
     // Syncing
+
+    /// Starts keeping every account up to date in the background; progress and changes come
+    /// through the listener.
+    pub fn start_sync(&self) {
+        self.shared.start();
+    }
+
+    pub fn stop_sync(&self) {
+        self.shared.stop();
+        if self.shared.lease_held.load(Ordering::Relaxed) {
+            let _ = self.rt.block_on(self.shared.drop_lease());
+        }
+    }
 
     /// One pass over the account: its mail, then its Outbox.
     pub fn sync_now(&self, account_id: String) -> Result<SyncSummary, CoreError> {

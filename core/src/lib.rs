@@ -8,6 +8,7 @@ mod mail;
 mod mailfolder;
 mod outbox;
 mod pin;
+mod run;
 mod settings;
 mod shared;
 mod types;

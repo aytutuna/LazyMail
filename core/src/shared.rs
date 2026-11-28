@@ -222,6 +222,7 @@ pub(crate) struct Shared {
     pub replica: tokio::sync::Mutex<Option<(MailAccess, Replica<AccountFolder>)>>,
     pub lease_held: AtomicBool,
     pub needs_rejoin: AtomicBool,
+    pub settings_thread: Mutex<Option<(Stop, JoinHandle<()>)>>,
 }
 
 impl Shared {
@@ -253,6 +254,7 @@ impl Shared {
             replica: tokio::sync::Mutex::new(None),
             lease_held: AtomicBool::new(false),
             needs_rejoin: AtomicBool::new(false),
+            settings_thread: Mutex::new(None),
         });
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir.join("accounts"))? {
