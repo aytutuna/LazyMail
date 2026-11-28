@@ -163,6 +163,10 @@ fn message_round_trip_with_ids_flags_labels() {
     assert!(!got.attachments[0].stored);
     assert_eq!(store.find_by_uid(f.id, 42).unwrap(), Some(id));
     assert_eq!(store.find_by_graph_id("AAMk").unwrap(), Some(id));
+    assert_eq!(
+        store.folder_graph_ids(f.id).unwrap(),
+        vec![(id, "AAMk".to_string())]
+    );
 
     store.set_flags(id, Flags::default()).unwrap();
     store.set_labels(id, &["Home".to_string()]).unwrap();

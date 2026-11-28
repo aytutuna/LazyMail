@@ -305,13 +305,17 @@ async fn a_second_sync_applies_only_the_delta() {
 }
 
 #[tokio::test]
-async fn a_dropped_delta_link_downloads_the_folder_again() {
+async fn a_dropped_delta_link_lists_the_folder_again_without_losing_rows() {
     let e = env().await;
     e.mailbox().await;
     e.inbox().await;
     e.graph.sync(&e.store).await.unwrap();
     let inbox = e.folder("inbox");
     assert!(inbox.sync.delta_link.is_some());
+    let ids: Vec<_> = [M1, M2, M3]
+        .iter()
+        .map(|m| e.store.find_by_graph_id(m).unwrap().unwrap())
+        .collect();
 
     Mock::given(method("GET"))
         .and(path("/me/mailFolders/inbox-id/messages/delta"))
@@ -322,10 +326,67 @@ async fn a_dropped_delta_link_downloads_the_folder_again() {
         ))
         .mount(&e.server)
         .await;
+    let before = e.server.received_requests().await.unwrap().len();
     let sum = e.graph.sync_folder(&e.store, inbox.id).await.unwrap();
-    assert_eq!(sum.added, 3);
-    assert_eq!(sum.removed, 0);
-    assert!(e.store.find_by_graph_id(M1).unwrap().is_some());
+    assert_eq!(sum, Summary::default());
+    for (m, id) in [M1, M2, M3].iter().zip(ids) {
+        assert_eq!(e.store.find_by_graph_id(m).unwrap(), Some(id));
+    }
+    let requests = e.server.received_requests().await.unwrap();
+    assert!(requests[before..]
+        .iter()
+        .all(|r| !r.url.path().ends_with("$value")));
+}
+
+#[tokio::test]
+async fn a_full_listing_drops_rows_the_server_no_longer_has() {
+    let e = env().await;
+    e.mailbox().await;
+    e.inbox().await;
+    e.graph.sync(&e.store).await.unwrap();
+    let inbox = e.folder("inbox");
+
+    // The expired link is answered with a listing that lacks M2 and has a new message.
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/inbox-id/messages/delta"))
+        .and(query_param("$deltatoken", "inbox-1"))
+        .respond_with(ResponseTemplate::new(410).set_body_raw(
+            fixture(&e, "error_sync_state_not_found.json"),
+            "application/json",
+        ))
+        .mount(&e.server)
+        .await;
+    let base = e.server.uri();
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/inbox-id/messages/delta"))
+        .and(query_param("$select", SELECT))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!(
+                r#"{{"value":[{{"id":"{M1}","isRead":true,"isDraft":false}},{{"id":"{M3}","isRead":false,"isDraft":false}}],"@odata.deltaLink":"{base}/me/mailFolders/inbox-id/messages/delta?$deltatoken=inbox-9"}}"#
+            ),
+            "application/json",
+        ))
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    let sum = e.graph.sync_folder(&e.store, inbox.id).await.unwrap();
+    assert_eq!(
+        sum,
+        Summary {
+            added: 0,
+            updated: 1,
+            removed: 1
+        }
+    );
+    assert!(e.message(M1).flags.seen);
+    assert!(e.store.find_by_graph_id(M2).unwrap().is_none());
+    assert!(e.store.find_by_graph_id(M3).unwrap().is_some());
+    assert!(e
+        .folder("inbox")
+        .sync
+        .delta_link
+        .unwrap()
+        .contains("inbox-9"));
 }
 
 #[tokio::test]

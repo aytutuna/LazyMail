@@ -294,13 +294,13 @@ impl<T: TokenSource> Graph<T> {
     }
 
     /// Downloads what changed in one folder since the last sync. A first sync, or one after the
-    /// server dropped the delta link, fetches every message.
+    /// server dropped the delta link, lists every message: known ones are updated in place, new
+    /// ones downloaded, and rows the server no longer lists are deleted once the list is complete.
     pub async fn sync_folder(&self, store: &Store, folder_id: i64) -> Result<Summary> {
         let folder = store.folder(folder_id)?.ok_or(Error::NotFound)?;
         let saved = folder.sync.delta_link.clone();
         match self.message_pages(store, &folder, saved.as_deref()).await {
             Err(Error::SyncStateGone) if saved.is_some() => {
-                store.reset_folder(folder.id)?;
                 self.message_pages(store, &folder, None).await
             }
             r => r,
@@ -321,6 +321,10 @@ impl<T: TokenSource> Graph<T> {
                 &[("$select", MESSAGE_FIELDS)],
             ),
         };
+        // A full listing keeps no resume link: an interrupted one starts over (downloaded mail is
+        // skipped), so the sweep for vanished rows always runs.
+        let full = from.is_none();
+        let mut seen: HashSet<String> = HashSet::new();
         let mut total = Summary::default();
         loop {
             let page: Page<MessageItem> = self.get_json(url).await?;
@@ -332,6 +336,9 @@ impl<T: TokenSource> Graph<T> {
             // One message at a time, so a page of large mail is never held in memory and an
             // interrupted run keeps what it fetched.
             for item in &page.value {
+                if full && item.removed.is_none() {
+                    seen.insert(item.id.clone());
+                }
                 let mut raw = None;
                 if item.removed.is_none() && store.find_by_graph_id(&item.id)?.is_none() {
                     match self.mime(&item.id).await {
@@ -343,13 +350,23 @@ impl<T: TokenSource> Graph<T> {
                 }
                 total += store.atomic(|s| apply(s, folder.id, item, raw.as_deref()))?;
             }
-            store.set_sync_state(
-                folder.id,
-                &SyncState {
-                    delta_link: Some(resume),
-                    ..SyncState::default()
-                },
-            )?;
+            if full && page.next.is_none() {
+                for (id, graph_id) in store.folder_graph_ids(folder.id)? {
+                    if !seen.contains(graph_id.as_str()) {
+                        store.delete_message(id)?;
+                        total.removed += 1;
+                    }
+                }
+            }
+            if !full || page.next.is_none() {
+                store.set_sync_state(
+                    folder.id,
+                    &SyncState {
+                        delta_link: Some(resume),
+                        ..SyncState::default()
+                    },
+                )?;
+            }
             match page.next {
                 Some(next) => url = self.link(&next)?,
                 None => return Ok(total),

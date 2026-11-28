@@ -387,6 +387,15 @@ impl Store {
             .optional()?)
     }
 
+    /// Row id and Graph id of every message in the folder that has one.
+    pub fn folder_graph_ids(&self, folder_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, graph_id FROM messages WHERE folder_id = ?1 AND graph_id IS NOT NULL",
+        )?;
+        let rows = st.query_map([folder_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Every UID in the folder with its flags, for comparing against the server.
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<(u32, Flags)>> {
         let mut st = self.conn.prepare(
