@@ -45,9 +45,11 @@ impl Fetched {
                 .map(|(_, _, d)| d.as_slice())
         };
         let body = find(false)?;
-        let mime = find(true)
-            .filter(|m| !m.is_empty())
-            .or(if path == [1] { self.header.as_deref() } else { None })?;
+        let mime = find(true).filter(|m| !m.is_empty()).or(if path == [1] {
+            self.header.as_deref()
+        } else {
+            None
+        })?;
         Some((mime, body))
     }
 }
@@ -90,7 +92,7 @@ pub(crate) fn fetched(attrs: &[AttributeValue<'_>]) -> Option<Fetched> {
             AttributeValue::InternalDate(d) => f.date = internal_date(d),
             AttributeValue::GmailMsgId(id) => f.gm_msgid = Some(*id as i64),
             AttributeValue::GmailLabels(v) => {
-                f.labels = Some(v.iter().map(|l| utf7::decode(l)).collect())
+                f.labels = Some(v.iter().map(|l| utf7::decode(&unescape(l))).collect())
             }
             AttributeValue::BodyStructure(b) => f.layout = Some(layout(b)),
             AttributeValue::BodySection {
@@ -181,8 +183,12 @@ fn walk(b: &BodyStructure<'_>, path: Vec<u32>, l: &mut Layout) {
         }
         BodyStructure::Basic { common, other, .. }
         | BodyStructure::Message { common, other, .. } => {
-            l.attachments
-                .push(attachment(common, &other.id, other.octets, part_name(&path)));
+            l.attachments.push(attachment(
+                common,
+                &other.id,
+                other.octets,
+                part_name(&path),
+            ));
         }
     }
 }
@@ -245,7 +251,7 @@ fn param(params: &Params<'_>, name: &str) -> Option<String> {
         params
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.to_string())
+            .map(|(_, v)| unescape(v))
     };
     if let Some(v) = find(name) {
         return Some(decode_words(&v));
@@ -411,4 +417,98 @@ pub(crate) fn decode_bytes(mime: &[u8], body: &[u8]) -> Vec<u8> {
         .parse(&raw)
         .map(|m| m.root_part().decoded().into_owned())
         .unwrap_or_default()
+}
+
+/// The parser hands quoted strings over with their backslash escapes still in.
+pub(crate) fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('\\', Some(n @ ('\\' | '"'))) => {
+                out.push(n);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_dates_carry_their_zone() {
+        assert_eq!(internal_date("01-Jan-1970 00:00:00 +0000"), Some(0));
+        assert_eq!(
+            internal_date("17-Jul-1996 02:44:25 -0700"),
+            Some(837_596_665)
+        );
+        assert_eq!(
+            internal_date(" 3-Jan-2023 10:00:00 +0130"),
+            Some(1_672_734_600)
+        );
+        assert_eq!(internal_date("nonsense"), None);
+    }
+
+    fn params(list: &[(&'static str, &'static str)]) -> Params<'static> {
+        Some(
+            list.iter()
+                .map(|(k, v)| (Cow::Borrowed(*k), Cow::Borrowed(*v)))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn file_names_come_out_of_all_three_encodings() {
+        assert_eq!(
+            param(&params(&[("NAME", "plain.txt")]), "name").unwrap(),
+            "plain.txt"
+        );
+        assert_eq!(
+            param(
+                &params(&[("name", "=?utf-8?Q?r=C3=A9sum=C3=A9.pdf?=")]),
+                "name"
+            )
+            .unwrap(),
+            "résumé.pdf"
+        );
+        assert_eq!(
+            param(
+                &params(&[("filename*", "utf-8''%e2%82%ac%20rates.txt")]),
+                "filename"
+            )
+            .unwrap(),
+            "€ rates.txt"
+        );
+        assert_eq!(
+            param(
+                &params(&[
+                    ("filename*1", "tables.gif"),
+                    ("filename*0*", "utf-8''Book%20about%20"),
+                ]),
+                "filename"
+            )
+            .unwrap(),
+            "Book about tables.gif"
+        );
+        assert_eq!(param(&None, "name"), None);
+    }
+
+    #[test]
+    fn quoted_escapes_are_removed() {
+        assert_eq!(unescape(r#"\\Inbox"#), r"\Inbox");
+        assert_eq!(unescape(r#"say \"hi\""#), r#"say "hi""#);
+        assert_eq!(unescape("plain"), "plain");
+    }
+
+    #[test]
+    fn a_part_with_its_own_header_decodes() {
+        let mime = b"Content-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n";
+        assert_eq!(decode_text(mime, b"Caf=E9"), "Café");
+        let bin = b"Content-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n";
+        assert_eq!(decode_bytes(bin, b"AAEC/w=="), [0, 1, 2, 255]);
+    }
 }

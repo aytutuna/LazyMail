@@ -35,7 +35,9 @@ pub(crate) async fn upgrade(
 ) -> Result<Stream> {
     let name = ServerName::try_from(host.to_string())
         .map_err(|_| Error::Protocol(format!("{host} is not a valid server name")))?;
-    let tls = TlsConnector::from(config.clone()).connect(name, tcp).await?;
+    let tls = TlsConnector::from(config.clone())
+        .connect(name, tcp)
+        .await?;
     Ok(Stream::Tls(Box::new(tls)))
 }
 

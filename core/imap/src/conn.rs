@@ -131,7 +131,7 @@ impl Reply {
                 delimiter,
                 name,
             }) => self.folders.push(RemoteFolder {
-                name: utf7::decode(name),
+                name: utf7::decode(&parse::unescape(name)),
                 delimiter: delimiter.as_ref().map(|d| d.to_string()),
                 attributes: name_attributes.iter().map(attribute).collect(),
             }),
@@ -358,9 +358,11 @@ impl Connection {
             match next.as_ref().map(|r| r.parsed()) {
                 None => return Err(Error::Closed),
                 Some(Response::Continue { .. }) => break,
-                Some(Response::Done { tag: t, information, .. }) if *t == tag => {
-                    return Err(refusal(information.as_deref().unwrap_or("")))
-                }
+                Some(Response::Done {
+                    tag: t,
+                    information,
+                    ..
+                }) if *t == tag => return Err(refusal(information.as_deref().unwrap_or(""))),
                 Some(_) => {}
             }
         }
@@ -399,9 +401,11 @@ impl Connection {
             match next.as_ref().map(|r| r.parsed()) {
                 None => return Err(Error::Closed),
                 Some(Response::Continue { .. }) => break,
-                Some(Response::Done { tag: t, information, .. }) if *t == tag => {
-                    return Err(refusal(information.as_deref().unwrap_or("")))
-                }
+                Some(Response::Done {
+                    tag: t,
+                    information,
+                    ..
+                }) if *t == tag => return Err(refusal(information.as_deref().unwrap_or(""))),
                 Some(_) => {}
             }
         }

@@ -89,8 +89,14 @@ mod tests {
 
     #[test]
     fn matches_the_rfc_examples() {
-        assert_eq!(decode("~peter/mail/&U,BTFw-/&ZeVnLIqe-"), "~peter/mail/台北/日本語");
-        assert_eq!(encode("~peter/mail/台北/日本語"), "~peter/mail/&U,BTFw-/&ZeVnLIqe-");
+        assert_eq!(
+            decode("~peter/mail/&U,BTFw-/&ZeVnLIqe-"),
+            "~peter/mail/台北/日本語"
+        );
+        assert_eq!(
+            encode("~peter/mail/台北/日本語"),
+            "~peter/mail/&U,BTFw-/&ZeVnLIqe-"
+        );
         assert_eq!(decode("Tom &- Jerry"), "Tom & Jerry");
     }
 
