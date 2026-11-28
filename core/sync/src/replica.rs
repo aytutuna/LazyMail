@@ -80,7 +80,13 @@ pub struct Replica<F> {
     pub(crate) seen: HashMap<String, Meta>,
     entries: BTreeMap<String, Entry>,
     pub(crate) devices: HashMap<DeviceId, DeviceRecord>,
-    pub(crate) leases: HashMap<DeviceId, Lease>,
+    /// Lease messages by message id.
+    pub(crate) leases: HashMap<String, Lease>,
+    /// Where each message stands in the folder, oldest first.
+    pub(crate) order: HashMap<String, usize>,
+    /// When this device first read each lease message, on its own clock.
+    pub(crate) lease_seen: HashMap<String, u64>,
+    next_pos: usize,
     pub(crate) join: JoinState,
     reach: (Option<String>, Option<String>),
 }
@@ -104,6 +110,9 @@ impl<F: Folder> Replica<F> {
             entries: BTreeMap::new(),
             devices: HashMap::new(),
             leases: HashMap::new(),
+            order: HashMap::new(),
+            lease_seen: HashMap::new(),
+            next_pos: 0,
             join: JoinState::default(),
             reach: (None, None),
         }
@@ -195,7 +204,7 @@ impl<F: Folder> Replica<F> {
                 continue;
             };
             if matches!(what, Kind::Change | Kind::Snapshot) {
-                merged |= self.apply(what, &plain).is_some();
+                merged |= self.apply(&id, what, from, &plain).is_some();
             }
             late.push(id);
         }
@@ -310,14 +319,20 @@ impl<F: Folder> Replica<F> {
             data,
         };
         let id = self.folder.append(serde_json::to_vec(&wire)?).await?;
-        self.seen.insert(id.clone(), meta);
+        self.note_written(&id, meta);
         Ok(id)
     }
 
     pub(crate) async fn append(&mut self, wire: &Wire, meta: Meta) -> Result<String> {
         let id = self.folder.append(serde_json::to_vec(wire)?).await?;
-        self.seen.insert(id.clone(), meta);
+        self.note_written(&id, meta);
         Ok(id)
+    }
+
+    fn note_written(&mut self, id: &str, meta: Meta) {
+        self.seen.insert(id.to_string(), meta);
+        self.order.insert(id.to_string(), self.next_pos);
+        self.next_pos += 1;
     }
 
     async fn put_snapshot(&mut self) -> Result<()> {
@@ -345,6 +360,9 @@ impl<F: Folder> Replica<F> {
         for id in ids {
             self.folder.delete(id).await?;
             self.seen.remove(id);
+            self.leases.remove(id);
+            self.lease_seen.remove(id);
+            self.order.remove(id);
         }
         Ok(())
     }
@@ -365,7 +383,10 @@ impl<F: Folder> Replica<F> {
             self.join
                 .approvals
                 .retain(|(_, id)| live.contains(id.as_str()));
-            self.drop_dead_leases();
+            self.leases.retain(|id, _| live.contains(id.as_str()));
+            self.lease_seen.retain(|id, _| live.contains(id.as_str()));
+            self.order = ids.iter().cloned().zip(0..).collect();
+            self.next_pos = ids.len();
             let mut rotations = Vec::new();
             for id in &ids {
                 if self.seen.contains_key(id) {
@@ -390,6 +411,7 @@ impl<F: Folder> Replica<F> {
                     self.seen.clear();
                     self.devices.clear();
                     self.leases.clear();
+                    self.lease_seen.clear();
                     switched = true;
                     break;
                 }
@@ -409,19 +431,6 @@ impl<F: Folder> Replica<F> {
             changed,
             needs_rejoin: self.rejoin,
         })
-    }
-
-    /// Forgets leases whose message another device has removed.
-    fn drop_dead_leases(&mut self) {
-        let held: HashSet<DeviceId> = self
-            .seen
-            .values()
-            .filter_map(|m| match m {
-                Meta::Lease(d) => Some(*d),
-                _ => None,
-            })
-            .collect();
-        self.leases.retain(|d, _| held.contains(d));
     }
 
     fn ingest(&mut self, id: String, wire: Wire) -> usize {
@@ -461,7 +470,7 @@ impl<F: Folder> Replica<F> {
             self.seen.insert(id, foreign);
             return 0;
         };
-        match self.apply(what, &plain) {
+        match self.apply(&id, what, from, &plain) {
             Some((meta, changed)) => {
                 self.seen.insert(id, meta);
                 changed
@@ -473,7 +482,13 @@ impl<F: Folder> Replica<F> {
         }
     }
 
-    fn apply(&mut self, what: Kind, plain: &[u8]) -> Option<(Meta, usize)> {
+    fn apply(
+        &mut self,
+        id: &str,
+        what: Kind,
+        from: DeviceId,
+        plain: &[u8],
+    ) -> Option<(Meta, usize)> {
         match what {
             Kind::Change => {
                 let c: Change = serde_json::from_slice(plain).ok()?;
@@ -506,15 +521,13 @@ impl<F: Folder> Replica<F> {
             }
             Kind::Lease => {
                 let l: Lease = serde_json::from_slice(plain).ok()?;
-                let holder = l.holder;
-                if self
-                    .leases
-                    .get(&holder)
-                    .is_none_or(|cur| cur.expires <= l.expires)
-                {
-                    self.leases.insert(holder, l);
+                if l.holder != from {
+                    return None;
                 }
-                Some((Meta::Lease(holder), 0))
+                let now = (self.clock)();
+                self.lease_seen.entry(id.to_string()).or_insert(now);
+                self.leases.insert(id.to_string(), l);
+                Some((Meta::Lease(from), 0))
             }
         }
     }

@@ -141,7 +141,6 @@ impl DeviceRecord {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub(crate) struct Lease {
     pub holder: DeviceId,
-    pub since: u64,
     pub expires: u64,
 }
 

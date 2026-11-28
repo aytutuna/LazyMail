@@ -300,3 +300,83 @@ async fn copied_changed_or_replayed_messages_do_nothing() {
     assert!(!pulled.needs_rejoin);
     assert_eq!(b.get("k"), Some("2"));
 }
+
+#[tokio::test]
+async fn two_devices_that_read_together_do_not_both_hold_the_lease() {
+    for a_first in [true, false] {
+        let folder = MemoryFolder::new();
+        let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+            .await
+            .unwrap();
+        let mut b = join(&mut a, &folder, "phone").await;
+        a.pull().await.unwrap();
+        b.pull().await.unwrap();
+        // Both have read the folder and see nobody holding.
+        assert!(a.lease_may_try().await.unwrap());
+        assert!(b.lease_may_try().await.unwrap());
+        if a_first {
+            a.lease_write().await.unwrap();
+            b.lease_write().await.unwrap();
+        } else {
+            b.lease_write().await.unwrap();
+            a.lease_write().await.unwrap();
+        }
+        a.pull().await.unwrap();
+        b.pull().await.unwrap();
+        let won = [
+            a.lease_settle().await.unwrap(),
+            b.lease_settle().await.unwrap(),
+        ];
+        assert_eq!(
+            won,
+            if a_first {
+                [true, false]
+            } else {
+                [false, true]
+            }
+        );
+        a.pull().await.unwrap();
+        b.pull().await.unwrap();
+        assert_eq!(a.lease_holder(), b.lease_holder());
+    }
+}
+
+#[tokio::test]
+async fn an_old_lease_put_back_does_not_block_the_others() {
+    let now = Arc::new(AtomicU64::new(1_800_000_000_000));
+    let at = || -> Clock {
+        let n = now.clone();
+        Arc::new(move || n.load(Ordering::SeqCst))
+    };
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), at())
+        .await
+        .unwrap();
+    let mut b = Replica::new(folder.clone(), Identity::generate("phone"), at());
+    b.request_join().await.unwrap();
+    a.pull().await.unwrap();
+    let nonce = a.join_requests()[0].nonce;
+    a.offer_join(nonce).await.unwrap();
+    b.pull().await.unwrap();
+    a.pull().await.unwrap();
+    let code = a.join_code(nonce).unwrap();
+    a.approve_join(nonce, &code).await.unwrap();
+    b.pull().await.unwrap();
+    let who = b.join_offers()[0].device;
+    b.finish_join(who, &code).await.unwrap();
+
+    assert!(a.hold_lease().await.unwrap());
+    let mut old = None;
+    for id in folder.list().await.unwrap() {
+        let body = folder.fetch(&id).await.unwrap().unwrap();
+        if String::from_utf8_lossy(&body).contains("\"what\":\"lease\"") {
+            old = Some(body);
+        }
+    }
+    a.drop_lease().await.unwrap();
+    now.fetch_add(60 * 60 * 1000, Ordering::SeqCst);
+    folder.append(old.unwrap()).await.unwrap();
+    b.pull().await.unwrap();
+    assert_eq!(b.lease_holder(), None);
+    assert!(b.hold_lease().await.unwrap());
+}

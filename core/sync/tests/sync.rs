@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -7,7 +6,7 @@ use std::task::{Context, Poll, Waker};
 
 use lazymail_sync::{
     scheduled_message_id, Clock, Error, Folder, Identity, MemoryFolder, Replica, SettingsKey,
-    COMPACT_AT, LEASE_MS, MAIN_DEVICE,
+    COMPACT_AT, LEASE_DRIFT_MS, LEASE_MS, MAIN_DEVICE,
 };
 
 type R = Replica<MemoryFolder>;
@@ -504,17 +503,13 @@ async fn other_accounts_follow_a_new_key() {
     c.pull().await.unwrap();
 }
 
-/// The Sent folder the sender checks before sending, as the plan asks.
-#[derive(Clone, Default)]
-struct Sent(Arc<Mutex<HashSet<String>>>);
-
-impl Sent {
-    fn send_once(&self, item: &str) -> bool {
-        self.0
-            .lock()
-            .unwrap()
-            .insert(scheduled_message_id(item, "alazy.app"))
+/// Asks every device for the lease and checks that at most one says yes.
+async fn lease_round(devices: &mut [&mut R]) -> Vec<bool> {
+    let mut answers = Vec::new();
+    for d in devices.iter_mut() {
+        answers.push(d.hold_lease().await.unwrap());
     }
+    answers
 }
 
 #[tokio::test]
@@ -537,43 +532,59 @@ async fn the_main_computer_keeps_the_lease() {
 }
 
 #[tokio::test]
-async fn another_device_takes_over_after_ten_minutes_without_sending_twice() {
+async fn another_device_takes_over_after_the_main_computer_has_been_quiet() {
     let time = Time::new();
     let folder = MemoryFolder::new();
     let mut a = first(&folder, &time, "laptop").await;
     let mut b = join(&mut a, &folder, &time, "phone", 0).await;
     a.set(MAIN_DEVICE, &a.id().to_string()).await.unwrap();
     b.pull().await.unwrap();
-    let sent = Sent::default();
-    let mut sends = 0;
 
-    assert!(a.hold_lease().await.unwrap());
-    // The main computer goes quiet.
-    time.advance(LEASE_MS - 1);
+    assert_eq!(lease_round(&mut [&mut a, &mut b]).await, [true, false]);
+    // The main computer goes quiet; the phone keeps looking.
+    for _ in 0..3 {
+        time.advance(LEASE_MS / 3);
+        b.pull().await.unwrap();
+    }
+    time.advance(1);
+    // Past the expiry but inside the margin for clocks that differ.
     assert!(!b.hold_lease().await.unwrap());
-    time.advance(2);
+    time.advance(LEASE_DRIFT_MS);
     assert!(b.hold_lease().await.unwrap());
-    if b.hold_lease().await.unwrap() && sent.send_once("later-1") {
-        sends += 1;
-    }
+    assert!(b.hold_lease().await.unwrap());
 
-    // It comes back and wins; the other stops, and the send is not repeated.
-    assert!(a.hold_lease().await.unwrap());
-    if a.hold_lease().await.unwrap() && sent.send_once("later-1") {
-        sends += 1;
-    }
+    // The main computer returns. It waits, the phone steps aside, then it holds.
+    assert!(!a.hold_lease().await.unwrap());
     assert!(!b.hold_lease().await.unwrap());
-    assert_eq!(a.lease_holder(), Some(a.id()));
-    assert_eq!(sends, 1);
+    assert!(a.hold_lease().await.unwrap());
+    assert!(!b.hold_lease().await.unwrap());
+    assert_eq!(b.lease_holder(), Some(a.id()));
+}
 
-    // With no main computer set, the earliest live lease wins and the other backs off.
-    let folder2 = MemoryFolder::new();
-    let mut x = first(&folder2, &time, "x").await;
-    let mut y = join(&mut x, &folder2, &time, "y", 0).await;
+#[tokio::test]
+async fn without_a_main_computer_the_first_lease_in_the_folder_wins() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let mut x = first(&folder, &time, "x").await;
+    let mut y = join(&mut x, &folder, &time, "y", 0).await;
     assert!(y.hold_lease().await.unwrap());
     assert!(!x.hold_lease().await.unwrap());
     y.drop_lease().await.unwrap();
     assert!(x.hold_lease().await.unwrap());
+}
+
+#[tokio::test]
+async fn a_device_with_a_fast_clock_does_not_take_a_live_lease() {
+    let time = Time::new();
+    let folder = MemoryFolder::new();
+    let mut a = first(&folder, &time, "laptop").await;
+    let mut b = join(&mut a, &folder, &time, "phone", 10 * 60 * 1000).await;
+    assert!(a.hold_lease().await.unwrap());
+    b.pull().await.unwrap();
+    assert!(!b.hold_lease().await.unwrap());
+    time.advance(LEASE_MS / 2);
+    assert!(a.hold_lease().await.unwrap());
+    assert!(!b.hold_lease().await.unwrap());
 }
 
 #[test]
