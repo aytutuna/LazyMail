@@ -419,6 +419,16 @@ impl Store {
             .optional()?)
     }
 
+    /// Rows in the folder that wait for a UID (not Gmail's, which `unplaced_gmail` covers).
+    pub fn unplaced(&self, folder_id: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT id FROM messages
+             WHERE folder_id = ?1 AND uid IS NULL AND gm_msgid IS NULL",
+        )?;
+        let rows = st.query_map([folder_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The labels of one message, sorted.
     pub fn labels(&self, id: i64) -> Result<Vec<String>> {
         let mut st = self

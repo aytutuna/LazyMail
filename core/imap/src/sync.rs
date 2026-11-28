@@ -115,6 +115,9 @@ pub(crate) async fn sync_folder(
     now: i64,
     progress: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Summary> {
+    // Rows a move left without a UID before this look at the server. Whatever of them the
+    // headers below do not claim by Message-ID is no longer in the folder.
+    let waiting = store.lock().unwrap().unplaced(folder.id)?;
     let sel = conn.select(&folder.name).await?;
     let gmail = conn.is_gmail() && conn.caps.gmail;
     let mut summary = Summary::default();
@@ -249,6 +252,18 @@ pub(crate) async fn sync_folder(
             summary.added += added;
             meter.advance(chunk.len(), progress);
         }
+    }
+
+    if !waiting.is_empty() {
+        let s = store.lock().unwrap();
+        let still = s.unplaced(folder.id)?;
+        s.atomic(|s| {
+            for id in waiting.iter().filter(|id| still.contains(id)) {
+                s.delete_message(*id)?;
+                summary.removed += 1;
+            }
+            Ok(())
+        })?;
     }
 
     // Saved before the bodies: a body that cannot be fetched must not keep the folder from

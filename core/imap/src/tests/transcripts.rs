@@ -816,3 +816,50 @@ async fn a_message_the_server_cannot_fetch_does_not_hold_back_the_folder() {
     drop(conn);
     replay.finish().unwrap();
 }
+
+#[tokio::test]
+async fn a_moved_message_that_never_shows_up_in_its_new_folder_is_dropped() {
+    // Another client emptied the folder before the move's UID was ever learned.
+    let script = format!(
+        "{}C: <tag> SELECT \"Archive\"\n\
+         S: * 0 EXISTS\n\
+         S: * OK [UIDVALIDITY 22] ok\n\
+         S: * OK [UIDNEXT 8] ok\n\
+         S: <tag> OK [READ-WRITE] done\n\
+         C: <tag> UID SEARCH ALL\n\
+         S: * SEARCH\n\
+         S: <tag> OK done\n",
+        login("IMAP4rev1")
+    );
+    let replay = serve(&script);
+    let mut conn = open(&replay, Provider::Other, false).await.unwrap();
+    let (_dir, store) = store();
+    let folder = store
+        .lock()
+        .unwrap()
+        .upsert_folder("Archive", Some("archive"))
+        .unwrap();
+    for message_id in [Some("g1@example.com".to_string()), None] {
+        store
+            .lock()
+            .unwrap()
+            .insert_message(&NewMessage {
+                folder_id: folder.id,
+                uid: None,
+                subject: "moved".into(),
+                message_id,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let s = sync_named(&mut conn, &store, "Archive", &Policy::default()).await;
+    assert_eq!(s.removed, 2);
+    assert!(store
+        .lock()
+        .unwrap()
+        .unplaced(folder.id)
+        .unwrap()
+        .is_empty());
+    drop(conn);
+    replay.finish().unwrap();
+}
