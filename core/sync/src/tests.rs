@@ -554,3 +554,97 @@ async fn a_made_up_epoch_stops_nothing() {
     lost.replace_key(warning).await.unwrap();
     assert!(lost.key().unwrap().epoch() < u32::MAX);
 }
+
+fn rotation_for(thief: &R, keep: &[&R]) -> crate::wire::Rotation {
+    use crate::crypto::{seal, wrap_key, wraps_digest, SettingsKey};
+    use crate::wire::Rotation;
+    let old = thief.key().unwrap();
+    let new = SettingsKey::random(old.epoch() + 1);
+    let wraps: Vec<_> = keep
+        .iter()
+        .map(|d| wrap_key(d.id(), &d.me.x_pub(), &new))
+        .collect();
+    let mut r = Rotation {
+        epoch: new.epoch,
+        from: thief.id(),
+        x_pub: thief.me.x_pub(),
+        ed_pub: thief.me.ed_pub(),
+        proof: seal(
+            &old.bytes,
+            &Rotation::aad(new.epoch, thief.id(), ""),
+            &wraps_digest(&wraps),
+        ),
+        wraps,
+        sig: [0; 64],
+    };
+    r.sig = thief.me.sign(&r.sig_bytes());
+    r
+}
+
+#[tokio::test]
+async fn a_removed_device_cannot_swap_the_rotation_unseen() {
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    let mut thief = join(&mut a, &folder, "tablet").await;
+    a.pull().await.unwrap();
+    b.pull().await.unwrap();
+    thief.pull().await.unwrap();
+
+    let keep = [a.id(), b.id()];
+    a.remove_device(thief.id(), &keep).await.unwrap();
+    // The thief still holds the old key: it deletes the real rotation and
+    // writes its own, wrapped for the phone and itself.
+    take(&folder, |w| matches!(w, Wire::Rotation(_)).then_some(())).await;
+    let fake = rotation_for(&thief, &[&b, &thief]);
+    put_wire(&folder, &Wire::Rotation(fake)).await;
+
+    // The phone follows the first rotation it finds.
+    let pulled = b.pull().await.unwrap();
+    assert!(!pulled.conflict);
+    // The laptop puts its own back and sees the rival.
+    let pulled = a.pull().await.unwrap();
+    assert!(pulled.conflict);
+    assert!(matches!(
+        a.set("k", "v").await,
+        Err(crate::Error::KeyConflict)
+    ));
+    // The phone then sees the real one next to the one it followed.
+    let pulled = b.pull().await.unwrap();
+    assert!(pulled.conflict);
+    assert!(matches!(
+        b.set("k", "v").await,
+        Err(crate::Error::KeyConflict)
+    ));
+}
+
+#[tokio::test]
+async fn a_copy_of_the_followed_rotation_is_not_a_conflict() {
+    let folder = MemoryFolder::new();
+    let (mut a, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let mut b = join(&mut a, &folder, "phone").await;
+    let c = join(&mut a, &folder, "tablet").await;
+    a.pull().await.unwrap();
+    b.pull().await.unwrap();
+    let keep = [a.id(), b.id()];
+    a.remove_device(c.id(), &keep).await.unwrap();
+    let body = {
+        let mut found = None;
+        for id in folder.list().await.unwrap() {
+            let body = folder.fetch(&id).await.unwrap().unwrap();
+            if matches!(serde_json::from_slice(&body), Ok(Wire::Rotation(_))) {
+                found = Some(body);
+            }
+        }
+        found.unwrap()
+    };
+    b.pull().await.unwrap();
+    folder.append(body).await.unwrap();
+    assert!(!b.pull().await.unwrap().conflict);
+    assert!(!a.pull().await.unwrap().conflict);
+    b.set("k", "v").await.unwrap();
+}

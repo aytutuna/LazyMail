@@ -290,17 +290,42 @@ pub(crate) struct JoinReveal {
 }
 
 /// The key for the next epoch, wrapped once per device that stays. `proof`
-/// is sealed under the old key, so only a current member could have made it.
+/// is sealed under the old key, so only a current member could have made it,
+/// and `sig` says which member.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Rotation {
     pub epoch: u32,
     pub from: DeviceId,
+    #[serde(with = "b64")]
+    pub x_pub: [u8; 32],
+    #[serde(with = "b64")]
+    pub ed_pub: [u8; 32],
     pub wraps: Vec<Wrap>,
     #[serde(with = "b64")]
     pub proof: Vec<u8>,
+    #[serde(with = "b64")]
+    pub sig: [u8; 64],
 }
 
 impl Rotation {
+    pub(crate) fn sig_bytes(&self) -> Vec<u8> {
+        let mut b = b"lazymail rotation v1".to_vec();
+        b.extend_from_slice(&self.epoch.to_le_bytes());
+        b.extend_from_slice(&self.from.0);
+        b.extend_from_slice(&self.x_pub);
+        b.extend_from_slice(&self.ed_pub);
+        for w in &self.wraps {
+            field(&mut b, &w.sig_bytes());
+        }
+        field(&mut b, &self.proof);
+        b
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        self.from == DeviceId::from_keys(&self.x_pub, &self.ed_pub)
+            && verify(&self.ed_pub, &self.sig_bytes(), &self.sig)
+    }
+
     pub(crate) fn aad(epoch: u32, from: DeviceId, scope: &str) -> Vec<u8> {
         format!("lazymail:rotation:{epoch}:{from}:{scope}").into_bytes()
     }

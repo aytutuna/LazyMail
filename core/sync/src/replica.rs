@@ -70,6 +70,10 @@ pub struct Pulled {
     /// the person can confirm on the other devices, or someone with the
     /// mailbox wrote a made-up number. Writing goes on under the current key.
     pub key_replaced: bool,
+    /// A second rotation to the epoch this device holds was written by a
+    /// member of the old key. Writing stops until the person has checked the
+    /// devices and recovered or started again.
+    pub conflict: bool,
 }
 
 /// Shown before a device starts a new key because it has neither another
@@ -91,6 +95,13 @@ pub struct Replica<F> {
     last: Hlc,
     pub(crate) key: Option<SettingsKey>,
     pub(crate) rejoin: bool,
+    /// The key before the last rotation, kept in memory to recognise a rival.
+    prev: Option<SettingsKey>,
+    /// Signature of the rotation this device followed or made.
+    adopted: Option<[u8; 64]>,
+    /// Where this device's own rotation is in the folder, to put it back.
+    own_rotation: Option<(String, Rotation)>,
+    conflict: bool,
     pub(crate) seen: HashMap<String, Meta>,
     entries: BTreeMap<String, Entry>,
     pub(crate) devices: HashMap<DeviceId, DeviceRecord>,
@@ -120,6 +131,10 @@ impl<F: Folder> Replica<F> {
             last,
             key: None,
             rejoin: false,
+            prev: None,
+            adopted: None,
+            own_rotation: None,
+            conflict: false,
             seen: HashMap::new(),
             entries: BTreeMap::new(),
             devices: HashMap::new(),
@@ -162,13 +177,22 @@ impl<F: Folder> Replica<F> {
     pub fn set_key(&mut self, key: SettingsKey) {
         self.key = Some(key);
         self.rejoin = false;
+        self.clear_rotation();
         self.seen.clear();
+    }
+
+    fn clear_rotation(&mut self) {
+        self.prev = None;
+        self.adopted = None;
+        self.own_rotation = None;
+        self.conflict = false;
     }
 
     /// Drops a key that turned out not to be the person's, and what was read with it.
     pub(crate) fn forget_key(&mut self) {
         self.key = None;
         self.rejoin = false;
+        self.clear_rotation();
         self.seen.clear();
         self.entries.clear();
         self.devices.clear();
@@ -240,6 +264,9 @@ impl<F: Folder> Replica<F> {
     }
 
     pub(crate) fn writable(&self) -> Result<SettingsKey> {
+        if self.conflict {
+            return Err(Error::KeyConflict);
+        }
         if self.rejoin {
             return Err(Error::NeedsRejoin);
         }
@@ -430,11 +457,17 @@ impl<F: Folder> Replica<F> {
             }
             let mut switched = false;
             for (id, r) in rotations {
+                if self.rival(&r) {
+                    self.conflict = true;
+                }
                 let accepted = self.accept_rotation(&r);
                 let excludes = accepted.is_none() && self.rotation_ok(&r);
                 self.seen.insert(id, Meta::Rotation { excludes });
                 if let Some(key) = accepted {
-                    self.key = Some(key);
+                    self.prev = self.key.replace(key);
+                    self.adopted = Some(r.sig);
+                    self.own_rotation = None;
+                    self.conflict = false;
                     self.seen.clear();
                     self.devices.clear();
                     self.leases.clear();
@@ -447,6 +480,7 @@ impl<F: Folder> Replica<F> {
                 break;
             }
         }
+        self.restore_own_rotation().await?;
         let mut key_replaced = false;
         if let Some(k) = &self.key {
             self.rejoin = self
@@ -463,6 +497,7 @@ impl<F: Folder> Replica<F> {
             changed,
             needs_rejoin: self.rejoin,
             key_replaced,
+            conflict: self.conflict,
         })
     }
 
@@ -587,15 +622,44 @@ impl<F: Folder> Replica<F> {
         let Some(key) = self.key.as_ref() else {
             return false;
         };
-        if key.epoch.checked_add(1) != Some(r.epoch) {
+        key.epoch.checked_add(1) == Some(r.epoch) && self.proof_opens(key, r)
+    }
+
+    fn proof_opens(&self, key: &SettingsKey, r: &Rotation) -> bool {
+        r.valid()
+            && open(
+                &key.bytes,
+                &Rotation::aad(r.epoch, r.from, self.folder.scope()),
+                &r.proof,
+            )
+            .is_ok_and(|p| p == wraps_digest(&r.wraps))
+    }
+
+    /// A different rotation to the epoch this device holds, made by a member
+    /// of the key before it. Copies of the one this device followed are not.
+    fn rival(&self, r: &Rotation) -> bool {
+        let (Some(key), Some(prev)) = (&self.key, &self.prev) else {
             return false;
+        };
+        r.epoch == key.epoch && self.adopted != Some(r.sig) && self.proof_opens(prev, r)
+    }
+
+    /// The device that rotated the key puts its rotation back if someone
+    /// deleted it before the others read it.
+    async fn restore_own_rotation(&mut self) -> Result<()> {
+        let Some((id, r)) = &self.own_rotation else {
+            return Ok(());
+        };
+        if self.seen.contains_key(id) {
+            return Ok(());
         }
-        open(
-            &key.bytes,
-            &Rotation::aad(r.epoch, r.from, self.folder.scope()),
-            &r.proof,
-        )
-        .is_ok_and(|p| p == wraps_digest(&r.wraps))
+        let wire = Wire::Rotation(r.clone());
+        let r = r.clone();
+        let id = self
+            .append(&wire, Meta::Rotation { excludes: false })
+            .await?;
+        self.own_rotation = Some((id, r));
+        Ok(())
     }
 
     /// Every device known in the folder, this one included once it has joined.
@@ -735,6 +799,7 @@ impl<F: Folder> Replica<F> {
         self.devices.clear();
         self.leases.clear();
         self.join = JoinState::default();
+        self.clear_rotation();
         let epoch = warning.epoch.checked_add(1).ok_or(Error::Corrupt)?;
         let code = self.start(epoch).await?;
         if !self.entries.is_empty() {
@@ -777,21 +842,29 @@ impl<F: Folder> Replica<F> {
             .map(|d| wrap_key(d.id, &d.x_pub, &new))
             .collect();
         let me = self.me.id();
-        let rotation = Rotation {
+        let mut rotation = Rotation {
             epoch: new.epoch,
             from: me,
+            x_pub: self.me.x_pub(),
+            ed_pub: self.me.ed_pub(),
             proof: seal(
                 &old.bytes,
                 &Rotation::aad(new.epoch, me, self.folder.scope()),
                 &wraps_digest(&wraps),
             ),
             wraps,
+            sig: [0; 64],
         };
+        rotation.sig = self.me.sign(&rotation.sig_bytes());
         let stale: Vec<String> = self.seen.keys().cloned().collect();
         let rotation_id = self
             .folder
-            .append(serde_json::to_vec(&Wire::Rotation(rotation))?)
+            .append(serde_json::to_vec(&Wire::Rotation(rotation.clone()))?)
             .await?;
+        self.clear_rotation();
+        self.prev = Some(old.clone());
+        self.adopted = Some(rotation.sig);
+        self.own_rotation = Some((rotation_id.clone(), rotation));
         self.key = Some(new);
         self.seen.clear();
         self.devices.clear();

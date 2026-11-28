@@ -23,7 +23,11 @@
 //! anyone with the mailbox can write anything else into the folder.
 //!
 //! Removing a device wraps a new key for the devices the person was shown and
-//! deletes everything the old key protected. A printed recovery code unwraps
+//! deletes everything the old key protected. The rotation is signed by the
+//! device that made it. A device that rotated puts its rotation back if it
+//! vanishes, and a device that followed one stops syncing, with
+//! [`Error::KeyConflict`], when a different rotation to the same epoch turns
+//! up that the old key also opens. A printed recovery code unwraps
 //! the key without another device.
 //!
 //! Leases keep scheduled work on one device: the lease first in the folder
@@ -88,6 +92,8 @@ pub enum Error {
     AmbiguousCode,
     #[error("that key did not come from this person's devices")]
     UntrustedKey,
+    #[error("two different new keys were started; stop and check the devices")]
+    KeyConflict,
     #[error("a message could not be read")]
     Corrupt,
 }
