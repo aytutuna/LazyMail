@@ -411,8 +411,8 @@ async fn a_new_key_names_what_the_others_lose() {
     lost.replace_key(warning).await.unwrap();
     assert_eq!(lost.entries().count(), 0);
 
-    assert!(a.pull().await.unwrap().needs_rejoin);
-    assert!(matches!(a.set("x", "y").await, Err(Error::NeedsRejoin)));
+    let pulled = a.pull().await.unwrap();
+    assert!(pulled.key_replaced && !pulled.needs_rejoin);
     // The old devices come back by joining the new one.
     let mut a2 = Replica::new(folder.clone(), Identity::generate("laptop"), time.clock(0));
     a2.request_join().await.unwrap();
@@ -496,7 +496,7 @@ async fn other_accounts_follow_a_new_key() {
     a.pull().await.unwrap();
     remove(&mut a, c.id()).await;
     acct_a.rekey(a.key().unwrap().clone()).await.unwrap();
-    assert!(acct_b.pull().await.unwrap().needs_rejoin);
+    assert!(acct_b.pull().await.unwrap().key_replaced);
     b.pull().await.unwrap();
     acct_b.set_key(b.key().unwrap().clone());
     acct_b.pull().await.unwrap();

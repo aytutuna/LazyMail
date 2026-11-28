@@ -15,6 +15,9 @@ pub const COMPACT_AT: usize = 200;
 /// Changes stamped further ahead than this are ignored.
 const MAX_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// Epochs above this are taken as made up when picking the next one.
+const MAX_EPOCH: u32 = 1 << 20;
+
 /// Milliseconds since the Unix epoch.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -48,7 +51,10 @@ pub(crate) enum Meta {
         nonce: [u8; 16],
     },
     Approval,
-    Rotation,
+    Rotation {
+        /// A member's rotation that leaves this device out.
+        excludes: bool,
+    },
     Recovery,
     Junk,
 }
@@ -57,8 +63,13 @@ pub(crate) enum Meta {
 pub struct Pulled {
     /// Settings entries that changed.
     pub changed: usize,
-    /// The key was replaced without this device: it has to join again.
+    /// A member rotated the key without this device: it has to join again.
     pub needs_rejoin: bool,
+    /// The folder holds messages under a newer key that no rotation of this
+    /// device's key explains. Either a key was started from scratch, which
+    /// the person can confirm on the other devices, or someone with the
+    /// mailbox wrote a made-up number. Writing goes on under the current key.
+    pub key_replaced: bool,
 }
 
 /// Shown before a device starts a new key because it has neither another
@@ -419,8 +430,10 @@ impl<F: Folder> Replica<F> {
             }
             let mut switched = false;
             for (id, r) in rotations {
-                self.seen.insert(id, Meta::Rotation);
-                if let Some(key) = self.accept_rotation(&r) {
+                let accepted = self.accept_rotation(&r);
+                let excludes = accepted.is_none() && self.rotation_ok(&r);
+                self.seen.insert(id, Meta::Rotation { excludes });
+                if let Some(key) = accepted {
                     self.key = Some(key);
                     self.seen.clear();
                     self.devices.clear();
@@ -434,8 +447,13 @@ impl<F: Folder> Replica<F> {
                 break;
             }
         }
+        let mut key_replaced = false;
         if let Some(k) = &self.key {
             self.rejoin = self
+                .seen
+                .values()
+                .any(|m| matches!(m, Meta::Rotation { excludes: true }));
+            key_replaced = self
                 .seen
                 .values()
                 .any(|m| matches!(m, Meta::Foreign { epoch, .. } if *epoch > k.epoch));
@@ -444,6 +462,7 @@ impl<F: Folder> Replica<F> {
         Ok(Pulled {
             changed,
             needs_rejoin: self.rejoin,
+            key_replaced,
         })
     }
 
@@ -553,23 +572,30 @@ impl<F: Folder> Replica<F> {
     /// The new key from a rotation this device may follow: made by a current
     /// member and wrapped for this device.
     fn accept_rotation(&self, r: &Rotation) -> Option<SettingsKey> {
-        let key = self.key.as_ref()?;
-        if r.epoch != key.epoch + 1 {
-            return None;
-        }
-        let proof = open(
-            &key.bytes,
-            &Rotation::aad(r.epoch, r.from, self.folder.scope()),
-            &r.proof,
-        )
-        .ok()?;
-        if proof != wraps_digest(&r.wraps) {
+        if !self.rotation_ok(r) {
             return None;
         }
         let wrap = r.wraps.iter().find(|w| w.to == self.me.id())?;
         unwrap_key(&self.me, wrap)
             .ok()
             .filter(|k| k.epoch == r.epoch)
+    }
+
+    /// The rotation is for the next epoch and its proof opens under the
+    /// current key, so a member made it.
+    fn rotation_ok(&self, r: &Rotation) -> bool {
+        let Some(key) = self.key.as_ref() else {
+            return false;
+        };
+        if key.epoch.checked_add(1) != Some(r.epoch) {
+            return false;
+        }
+        open(
+            &key.bytes,
+            &Rotation::aad(r.epoch, r.from, self.folder.scope()),
+            &r.proof,
+        )
+        .is_ok_and(|p| p == wraps_digest(&r.wraps))
     }
 
     /// Every device known in the folder, this one included once it has joined.
@@ -683,7 +709,9 @@ impl<F: Folder> Replica<F> {
             } = m
             {
                 devices.insert(*from);
-                epoch = epoch.max(*e);
+                if *e <= MAX_EPOCH {
+                    epoch = epoch.max(*e);
+                }
                 if *what == Kind::Change {
                     changes += 1;
                 }
@@ -707,7 +735,8 @@ impl<F: Folder> Replica<F> {
         self.devices.clear();
         self.leases.clear();
         self.join = JoinState::default();
-        let code = self.start(warning.epoch + 1).await?;
+        let epoch = warning.epoch.checked_add(1).ok_or(Error::Corrupt)?;
+        let code = self.start(epoch).await?;
         if !self.entries.is_empty() {
             self.put_snapshot().await?;
         }
@@ -742,7 +771,7 @@ impl<F: Folder> Replica<F> {
             .filter(|d| d.id != id)
             .cloned()
             .collect();
-        let new = SettingsKey::random(old.epoch + 1);
+        let new = SettingsKey::random(old.epoch.checked_add(1).ok_or(Error::Corrupt)?);
         let wraps: Vec<Wrap> = keep
             .iter()
             .map(|d| wrap_key(d.id, &d.x_pub, &new))
@@ -767,7 +796,8 @@ impl<F: Folder> Replica<F> {
         self.seen.clear();
         self.devices.clear();
         self.leases.clear();
-        self.seen.insert(rotation_id, Meta::Rotation);
+        self.seen
+            .insert(rotation_id, Meta::Rotation { excludes: false });
         for record in keep {
             let id = record.id;
             self.put(Kind::Device, &record, Meta::Device(id)).await?;

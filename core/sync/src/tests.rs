@@ -524,3 +524,33 @@ async fn unchecked_reveals_and_approvals_are_not_kept() {
     assert!(host.join.reveals.len() <= 1);
     assert!(host.join_code(nonce).is_ok());
 }
+
+#[tokio::test]
+async fn a_made_up_epoch_stops_nothing() {
+    let folder = MemoryFolder::new();
+    let (mut host, _) = R::create(folder.clone(), Identity::generate("laptop"), clock())
+        .await
+        .unwrap();
+    let forged = serde_json::json!({
+        "t": "sealed",
+        "what": "change",
+        "epoch": u32::MAX,
+        "from": host.id(),
+        "data": "AAAA",
+    });
+    folder
+        .append(forged.to_string().into_bytes())
+        .await
+        .unwrap();
+
+    let pulled = host.pull().await.unwrap();
+    assert!(pulled.key_replaced && !pulled.needs_rejoin);
+    host.set("k", "v").await.unwrap();
+    let phone = join(&mut host, &folder, "phone").await;
+    assert_eq!(phone.get("k"), Some("v"));
+
+    let mut lost = Replica::new(folder.clone(), Identity::generate("fresh"), clock());
+    let warning = lost.lost_key_warning().await.unwrap();
+    lost.replace_key(warning).await.unwrap();
+    assert!(lost.key().unwrap().epoch() < u32::MAX);
+}

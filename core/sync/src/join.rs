@@ -431,17 +431,12 @@ impl<F: Folder> Replica<F> {
             .cloned()
             .ok_or(Error::NoApproval)?;
         let key = unwrap_key(&self.me, &approval.wrap)?;
-        let epoch = key.epoch;
         self.set_key(key);
         self.pull().await?;
         // Nothing in the folder can vouch for a key a person confirmed by
         // code, since anyone with the mailbox can write there. This only
         // catches a key that has already been replaced.
-        let newer = self
-            .seen
-            .values()
-            .any(|m| matches!(m, Meta::Foreign { epoch: e, .. } if *e > epoch));
-        if newer {
+        if self.rejoin {
             self.forget_key();
             return Err(Error::UntrustedKey);
         }
