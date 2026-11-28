@@ -243,34 +243,20 @@ pub(crate) async fn sync_folder(
         }
     }
 
-    if !complete {
-        // An earlier run may have stopped between headers and bodies. The store is let go
-        // between chunks, since a big folder takes a while to look through.
-        let have: HashSet<i64> = pending.iter().map(|p| p.id).collect();
-        for chunk in stored.chunks(500) {
-            let s = store.lock().unwrap();
-            for (uid, _) in chunk {
-                let Some(id) = s.find_by_uid(folder.id, *uid)? else {
-                    continue;
-                };
-                if have.contains(&id) {
-                    continue;
-                }
-                if let Some(m) = s.message(id)? {
-                    if m.body_text.is_none() && m.body_html.is_none() {
-                        pending.push(Pending {
-                            id,
-                            uid: *uid,
-                            date: m.date,
-                            layout: None,
-                        });
-                    }
-                }
-            }
+    // An earlier run may have stopped between headers and bodies, in a folder that was already
+    // complete as much as in a new one, so rows without a body are looked for every time.
+    let since = policy.body_days.map(|d| now - i64::from(d) * 86400);
+    let have: HashSet<i64> = pending.iter().map(|p| p.id).collect();
+    for (id, uid, date) in store.lock().unwrap().without_bodies(folder.id, since)? {
+        if !have.contains(&id) {
+            pending.push(Pending {
+                id,
+                uid,
+                date,
+                layout: None,
+            });
         }
     }
-
-    let since = policy.body_days.map(|d| now - i64::from(d) * 86400);
     pending.retain(|p| since.is_none_or(|s| p.date >= s));
     pending.sort_unstable_by_key(|p| std::cmp::Reverse(p.uid));
     if !pending.is_empty() {

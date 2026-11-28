@@ -614,6 +614,38 @@ async fn an_interrupted_first_download_picks_up_where_it_stopped() {
 
 #[tokio::test]
 #[ignore]
+async fn a_complete_folder_with_headers_but_no_bodies_gets_its_bodies() {
+    servers!(env);
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    let mut conn = env.open().await;
+    let name = unique("headers-only");
+    create(&mut conn, &name).await;
+    for i in 0..3 {
+        conn.append_message(
+            &name,
+            &plain(
+                &format!("m{i}"),
+                &format!("h{i}@example.com"),
+                "Mon, 02 Jan 2023 10:00:00 +0000",
+            ),
+            Flags::default(),
+        )
+        .await
+        .unwrap();
+    }
+    sync_named(&mut conn, &store, &name, &Policy::default()).await;
+    let f = folder_of(&store, &name);
+    assert!(f.sync.uidnext.is_some());
+    // The folder is complete, and a later run stopped after storing headers of new mail.
+    store.lock().unwrap().prune_bodies(i64::MAX).unwrap();
+    assert!(rows(&store, &f).iter().all(|m| m.body_text.is_none()));
+    sync_named(&mut conn, &store, &name, &Policy::default()).await;
+    assert!(rows(&store, &f).iter().all(|m| m.body_text.is_some()));
+}
+
+#[tokio::test]
+#[ignore]
 async fn phones_keep_bodies_only_for_recent_mail() {
     servers!(env);
     let dir = TempDir::new().unwrap();

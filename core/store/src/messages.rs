@@ -387,6 +387,24 @@ impl Store {
             .optional()?)
     }
 
+    /// Messages of the folder that have a UID but no body yet and are dated `since` or later
+    /// (all of them for None): (row id, UID, date), for finishing a download that was cut off.
+    pub fn without_bodies(
+        &self,
+        folder_id: i64,
+        since: Option<i64>,
+    ) -> Result<Vec<(i64, u32, i64)>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, uid, date FROM messages
+             WHERE folder_id = ?1 AND uid IS NOT NULL AND body_text IS NULL AND body_html IS NULL
+               AND date >= ?2",
+        )?;
+        let rows = st.query_map(params![folder_id, since.unwrap_or(i64::MIN)], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Every UID in the folder with its flags, for comparing against the server.
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<(u32, Flags)>> {
         let mut st = self.conn.prepare(
