@@ -37,18 +37,18 @@ pub enum Update {
 
 /// Waits 1 s after the first failure and doubles up to 5 minutes.
 #[derive(Debug, Default)]
-pub struct Backoff {
+struct Backoff {
     failures: u32,
 }
 
 impl Backoff {
-    pub fn wait(&mut self) -> Duration {
+    fn wait(&mut self) -> Duration {
         let secs = 1u64 << self.failures.min(9);
         self.failures += 1;
         Duration::from_secs(secs.min(300))
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.failures = 0;
     }
 }
