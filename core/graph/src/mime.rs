@@ -7,8 +7,10 @@ pub struct Parsed {
     pub headers: String,
     pub text: Option<String>,
     pub html: Option<String>,
-    /// `part` is the attachment's position in the message's attachment list.
+    /// `part` is the attachment's position in the message's attachment list; the bytes are in
+    /// `attachment_data`, one entry each, since the whole message was downloaded anyway.
     pub attachments: Vec<NewAttachment>,
+    pub attachment_data: Vec<Vec<u8>>,
 }
 
 pub fn parse(raw: &[u8]) -> Option<Parsed> {
@@ -40,6 +42,7 @@ pub fn parse(raw: &[u8]) -> Option<Parsed> {
             part: i.to_string(),
         })
         .collect();
+    let attachment_data = msg.attachments().map(|p| p.contents().to_vec()).collect();
     let text = msg
         .text_bodies()
         .find(|p| !p.is_text_html())
@@ -57,6 +60,7 @@ pub fn parse(raw: &[u8]) -> Option<Parsed> {
         text,
         html,
         attachments,
+        attachment_data,
     })
 }
 

@@ -124,8 +124,12 @@ impl MessageItem {
         }
     }
 
-    fn new_message(&self, folder_id: i64, raw: Option<&[u8]>) -> NewMessage {
-        let parsed = raw.and_then(mime::parse);
+    fn new_message(
+        &self,
+        folder_id: i64,
+        size: usize,
+        parsed: Option<&mime::Parsed>,
+    ) -> NewMessage {
         let from = self.from.as_ref().map(|r| &r.address);
         NewMessage {
             folder_id,
@@ -144,17 +148,14 @@ impl MessageItem {
                 .as_deref()
                 .and_then(DateTime::parse_rfc3339)
                 .map_or(0, |d| d.to_timestamp()),
-            size: raw.map_or(0, |r| r.len() as u32),
+            size: size as u32,
             flags: self.flags(),
-            in_reply_to: parsed.as_ref().and_then(|p| p.in_reply_to.clone()),
-            references: parsed
-                .as_ref()
-                .map(|p| p.references.clone())
-                .unwrap_or_default(),
-            headers: parsed.as_ref().map(|p| p.headers.clone()),
-            body_text: parsed.as_ref().and_then(|p| p.text.clone()),
-            body_html: parsed.as_ref().and_then(|p| p.html.clone()),
-            attachments: parsed.map(|p| p.attachments).unwrap_or_default(),
+            in_reply_to: parsed.and_then(|p| p.in_reply_to.clone()),
+            references: parsed.map(|p| p.references.clone()).unwrap_or_default(),
+            headers: parsed.map(|p| p.headers.clone()),
+            body_text: parsed.and_then(|p| p.text.clone()),
+            body_html: parsed.and_then(|p| p.html.clone()),
+            attachments: parsed.map(|p| p.attachments.clone()).unwrap_or_default(),
             ..NewMessage::default()
         }
     }
@@ -328,8 +329,9 @@ impl<T: TokenSource> Graph<T> {
                 .clone()
                 .or_else(|| page.delta.clone())
                 .ok_or_else(|| Error::BadResponse("page without a link".into()))?;
-            let mut items = Vec::new();
-            for item in page.value {
+            // One message at a time, so a page of large mail is never held in memory and an
+            // interrupted run keeps what it fetched.
+            for item in &page.value {
                 let mut raw = None;
                 if item.removed.is_none() && store.find_by_graph_id(&item.id)?.is_none() {
                     match self.mime(&item.id).await {
@@ -339,22 +341,15 @@ impl<T: TokenSource> Graph<T> {
                         Err(e) => return Err(e),
                     }
                 }
-                items.push((item, raw));
+                total += store.atomic(|s| apply(s, folder.id, item, raw.as_deref()))?;
             }
-            total += store.atomic(|s| {
-                let mut sum = Summary::default();
-                for (item, raw) in &items {
-                    sum += apply(s, folder.id, item, raw.as_deref())?;
-                }
-                s.set_sync_state(
-                    folder.id,
-                    &SyncState {
-                        delta_link: Some(resume.clone()),
-                        ..SyncState::default()
-                    },
-                )?;
-                Ok(sum)
-            })?;
+            store.set_sync_state(
+                folder.id,
+                &SyncState {
+                    delta_link: Some(resume),
+                    ..SyncState::default()
+                },
+            )?;
             match page.next {
                 Some(next) => url = self.link(&next)?,
                 None => return Ok(total),
@@ -408,7 +403,18 @@ fn apply(
             sum.updated += 1;
         }
     } else {
-        s.insert_message(&item.new_message(folder_id, raw))?;
+        let parsed = raw.and_then(mime::parse);
+        let id = s.insert_message(&item.new_message(
+            folder_id,
+            raw.map_or(0, <[u8]>::len),
+            parsed.as_ref(),
+        ))?;
+        if let Some(p) = &parsed {
+            let stored = s.message(id)?.map(|m| m.attachments).unwrap_or_default();
+            for (a, data) in stored.iter().zip(&p.attachment_data) {
+                s.put_attachment_data(a.id, data)?;
+            }
+        }
         sum.added += 1;
     }
     Ok(sum)

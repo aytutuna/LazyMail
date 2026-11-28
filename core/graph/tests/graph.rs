@@ -223,6 +223,13 @@ async fn first_sync_downloads_folders_and_mail() {
     assert_eq!(m2.attachments.len(), 1);
     assert_eq!(m2.attachments[0].filename, "agenda.pdf");
     assert_eq!(m2.attachments[0].mime, "application/pdf");
+    // The bytes came with the message and are kept, so opening it needs no second download.
+    assert_eq!(
+        e.store.attachment_data(m2.attachments[0].id).unwrap().unwrap(),
+        b"%PDF-1.4
+%%EOF
+"
+    );
 
     let m3 = e.message(M3);
     assert!(m3.body_html.unwrap().contains("Three things"));
@@ -656,6 +663,40 @@ async fn the_inbox_goes_first_and_a_failing_folder_does_not_stop_the_rest() {
         .map(|r| r.url.path().to_string())
         .collect();
     assert!(order[0].contains("inbox-id"));
+}
+
+#[tokio::test]
+async fn an_interrupted_page_keeps_the_messages_already_fetched() {
+    let e = env().await;
+    e.mailbox().await;
+    e.inbox().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/me/messages/{M2}/$value")))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(
+            r#"{"error":{"code":"ErrorInternalServerError","message":"x"}}"#,
+            "application/json",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    e.graph.sync_folders(&e.store).await.unwrap();
+    let inbox = e.folder("inbox");
+    assert!(e.graph.sync_folder(&e.store, inbox.id).await.is_err());
+    assert!(e.store.find_by_graph_id(M1).unwrap().is_some());
+    assert!(e.store.find_by_graph_id(M2).unwrap().is_none());
+
+    let sum = e.graph.sync_folder(&e.store, inbox.id).await.unwrap();
+    assert_eq!(sum.added, 2);
+    let fetched = e
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with(&format!("{M1}/$value")))
+        .count();
+    assert_eq!(fetched, 1);
 }
 
 #[tokio::test]
