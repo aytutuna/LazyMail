@@ -12,7 +12,7 @@ hickory-resolver = "0.26"
 idna = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
-rustls-platform-verifier = "0.6"
+rustls-platform-verifier = "0.7"
 roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
