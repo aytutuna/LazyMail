@@ -32,6 +32,17 @@ pub struct Summary {
     pub removed: usize,
 }
 
+/// What a full `sync` did. A folder that failed with an error of its own (gone, refused, an
+/// answer that makes no sense) is listed in `failed` and the others still sync; sign-in,
+/// throttling and network errors end the run instead, since every folder would fail alike.
+#[derive(Debug, Default)]
+pub struct SyncReport {
+    pub summary: Summary,
+    /// Folder id and what it changed, in the order they finished (Inbox first).
+    pub folders: Vec<(i64, Summary)>,
+    pub failed: Vec<(i64, Error)>,
+}
+
 impl AddAssign for Summary {
     fn add_assign(&mut self, o: Summary) {
         self.added += o.added;
@@ -165,15 +176,27 @@ fn display(list: &[Recipient]) -> String {
 
 impl<T: TokenSource> Graph<T> {
     /// Brings the folder list and every folder's messages up to date.
-    pub async fn sync(&self, store: &Store) -> Result<Summary> {
+    pub async fn sync(&self, store: &Store) -> Result<SyncReport> {
         self.sync_folders(store).await?;
-        let mut total = Summary::default();
-        for folder in store.folders()? {
-            if folder.remote_id.is_some() {
-                total += self.sync_folder(store, folder.id).await?;
+        let mut folders = store.folders()?;
+        folders.sort_by_key(|f| f.role.as_deref() != Some("inbox"));
+        let mut report = SyncReport::default();
+        for folder in folders {
+            if folder.remote_id.is_none() {
+                continue;
+            }
+            match self.sync_folder(store, folder.id).await {
+                Ok(sum) => {
+                    report.summary += sum;
+                    report.folders.push((folder.id, sum));
+                }
+                Err(e @ (Error::Api { .. } | Error::NotFound | Error::BadResponse(_))) => {
+                    report.failed.push((folder.id, e));
+                }
+                Err(e) => return Err(e),
             }
         }
-        Ok(total)
+        Ok(report)
     }
 
     /// Follows the folder delta, remembering where it stopped.

@@ -164,7 +164,7 @@ async fn first_sync_downloads_folders_and_mail() {
     e.mailbox().await;
     e.inbox().await;
 
-    let sum = e.graph.sync(&e.store).await.unwrap();
+    let sum = e.graph.sync(&e.store).await.unwrap().summary;
     assert_eq!(
         sum,
         Summary {
@@ -268,7 +268,7 @@ async fn a_second_sync_applies_only_the_delta() {
     .await;
     let before = e.server.received_requests().await.unwrap().len();
 
-    let sum = e.graph.sync(&e.store).await.unwrap();
+    let sum = e.graph.sync(&e.store).await.unwrap().summary;
     assert_eq!(
         sum,
         Summary {
@@ -625,6 +625,40 @@ async fn send_mail_posts_the_message_as_base64_text() {
 }
 
 #[tokio::test]
+async fn the_inbox_goes_first_and_a_failing_folder_does_not_stop_the_rest() {
+    let e = env().await;
+    e.mailbox().await;
+    e.inbox().await;
+    // Sent Items and Junk Email sort after Inbox and Drafts; Drafts fails.
+    Mock::given(method("GET"))
+        .and(path("/me/mailFolders/drafts-id/messages/delta"))
+        .respond_with(ResponseTemplate::new(404).set_body_raw(
+            r#"{"error":{"code":"ErrorFolderNotFound","message":"gone"}}"#,
+            "application/json",
+        ))
+        .with_priority(1)
+        .mount(&e.server)
+        .await;
+    let report = e.graph.sync(&e.store).await.unwrap();
+    assert_eq!(report.summary.added, 3);
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].0, e.folder("drafts").id);
+    assert_eq!(report.folders[0].0, e.folder("inbox").id);
+    assert_eq!(report.folders.len(), 5);
+    // Deleted Items sorts before Drafts and Inbox by name, yet the inbox was asked first.
+    let order: Vec<String> = e
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/messages/delta"))
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert!(order[0].contains("inbox-id"));
+}
+
+#[tokio::test]
 async fn a_message_too_big_for_sendmail_is_refused_before_the_request() {
     let e = env().await;
     let raw = vec![b'x'; 3_100_000];
@@ -647,7 +681,7 @@ async fn a_message_deleted_before_its_body_is_fetched_is_skipped() {
         .with_priority(1)
         .mount(&e.server)
         .await;
-    let sum = e.graph.sync(&e.store).await.unwrap();
+    let sum = e.graph.sync(&e.store).await.unwrap().summary;
     assert_eq!(sum.added, 2);
     assert!(e.store.find_by_graph_id(M2).unwrap().is_none());
 }
