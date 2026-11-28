@@ -1,4 +1,5 @@
 mod actions;
+mod blobs;
 mod client;
 mod mime;
 mod sync;

@@ -22,8 +22,10 @@ const ROLES: [(&str, &str); 6] = [
     ("archive", "archive"),
 ];
 
-/// Folders that hold no mail of the person's, by the names Outlook gives them in English.
-const SYSTEM_FOLDERS: [&str; 6] = [
+/// Folders that hold no mail of the person's: the names Outlook gives its own in English, and the
+/// settings folder.
+const SYSTEM_FOLDERS: [&str; 7] = [
+    "Alazy",
     "Outbox",
     "Sync Issues",
     "Conversation History",
