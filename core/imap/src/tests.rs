@@ -519,6 +519,52 @@ async fn follows_a_folder_by_uid_ranges_without_condstore() {
 
 #[tokio::test]
 #[ignore]
+async fn qresync_names_the_expunged_uids_as_vanished() {
+    servers!(env);
+    let dir = TempDir::new().unwrap();
+    let store = new_store(&dir);
+    let mut conn = env.open().await;
+    assert!(conn.qresync_on, "the test server should offer QRESYNC");
+    let name = unique("vanished");
+    create(&mut conn, &name).await;
+    for i in 0..3 {
+        conn.append_message(
+            &name,
+            &plain(
+                &format!("m{i}"),
+                &format!("x{i}@example.com"),
+                "Mon, 02 Jan 2023 10:00:00 +0000",
+            ),
+            Flags::default(),
+        )
+        .await
+        .unwrap();
+    }
+    sync_named(&mut conn, &store, &name, &Policy::default()).await;
+    let f = folder_of(&store, &name);
+    let modseq = f.sync.highestmodseq.expect("the folder has a modseq");
+    let gone = rows(&store, &f)[1].uid.unwrap();
+
+    let mut other = env.open().await;
+    other.select(&name).await.unwrap();
+    other
+        .exec(&format!("UID STORE {gone} +FLAGS (\\Deleted)"))
+        .await
+        .unwrap();
+    other.exec("EXPUNGE").await.unwrap();
+
+    conn.select(&name).await.unwrap();
+    let reply = conn
+        .exec(&format!(
+            "UID FETCH 1:* (FLAGS) (CHANGEDSINCE {modseq} VANISHED)"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(reply.vanished, [gone]);
+}
+
+#[tokio::test]
+#[ignore]
 async fn a_new_uidvalidity_starts_the_folder_over() {
     servers!(env);
     let dir = TempDir::new().unwrap();
