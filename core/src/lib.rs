@@ -1,4 +1,18 @@
+mod callbacks;
+#[cfg(feature = "dev-key")]
+mod devkey;
+mod error;
+mod types;
+
 uniffi::setup_scaffolding!();
+
+pub use callbacks::{
+    EventListener, KeyError, TokenFailure, TokenProvider, TokenResource, WrappingKey,
+};
+#[cfg(feature = "dev-key")]
+pub use devkey::DevKey;
+pub use error::CoreError;
+pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct CoreInfo {

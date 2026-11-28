@@ -1586,6 +1586,23 @@ dependencies = [
 name = "lazymail-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "getrandom 0.4.3",
+ "lazymail-accounts",
+ "lazymail-core",
+ "lazymail-graph",
+ "lazymail-imap",
+ "lazymail-smtp",
+ "lazymail-store",
+ "lazymail-sync",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
  "uniffi",
 ]
 

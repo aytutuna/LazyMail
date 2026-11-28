@@ -10,4 +10,28 @@ publish.workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+base64 = "0.22"
+chacha20poly1305 = { version = "0.11.0", optional = true }
+getrandom = "0.4.3"
+lazymail-accounts = { path = "accounts" }
+lazymail-graph = { path = "graph" }
+lazymail-imap = { path = "imap" }
+lazymail-smtp = { path = "smtp" }
+lazymail-store = { path = "store" }
+lazymail-sync = { path = "sync" }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11.2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 uniffi = "=0.32.0"
+
+[features]
+# A wrapping key kept in a plain file next to the data, for the command line tool and tests.
+# Anything that ships to people keeps the key in the platform's own store instead.
+dev-key = ["dep:chacha20poly1305"]
+
+[dev-dependencies]
+lazymail-core = { path = ".", features = ["dev-key"] }
+tempfile = "3"
