@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64 = "0.22"
 chacha20poly1305 = "0.11.0"
+# RustCrypto has no Ed25519 or X25519 implementation; these two are dalek.
 ed25519-dalek = "2"
 getrandom = "0.4.3"
 hkdf = "0.13.0"

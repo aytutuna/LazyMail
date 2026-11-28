@@ -354,6 +354,18 @@ async fn joining_does_not_expose_secrets() {
     let b = join(&mut a, &folder, &time, "phone", 0).await;
     assert_eq!(b.key().unwrap().epoch(), a.key().unwrap().epoch());
     assert_eq!(b.entries().count(), 0);
+    // The messages that carried the join are gone.
+    for body in folder.bodies() {
+        let text = String::from_utf8_lossy(&body).to_string();
+        for kind in [
+            "\"t\":\"join\"",
+            "\"t\":\"offer\"",
+            "\"t\":\"approval\"",
+            "\"t\":\"reveal\"",
+        ] {
+            assert!(!text.contains(kind), "{kind} left in the folder");
+        }
+    }
 }
 
 #[tokio::test]

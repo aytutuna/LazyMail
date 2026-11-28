@@ -1,40 +1,38 @@
 //! Settings sync, device join and leases through the person's own mailbox.
 //!
-//! Every change is its own small message in a folder called "Alazy" (a
-//! label in Gmail), so the mail provider is the only server involved. The
-//! [`Folder`] trait is all the code needs from it; the IMAP and Graph
-//! implementations set the subject "Alazy settings, do not delete".
+//! Every change is its own small message in a folder called "Alazy". The
+//! [`Folder`] trait is all the code needs from it; only an in-memory folder
+//! exists so far, and the IMAP and Graph folders are still to be written.
 //!
-//! Key design:
-//! - One random 256-bit settings key per person, versioned by an epoch. Changes,
-//!   snapshots, device records and leases are sealed with it (XChaCha20-Poly1305,
-//!   header fields bound as associated data). Plain messages are only the ones a
-//!   device without the key must be able to read: join requests, offers and
-//!   approvals, which are signed, and the recovery blob.
-//! - Merge is per key, last writer wins on a hybrid logical clock that breaks
-//!   ties by device id. Merging is commutative, so pull order does not matter.
-//!   A snapshot is the merged state; after 200 changes a device writes one and
-//!   removes the messages it covers.
-//! - A device is an x25519 key (receives the settings key) and an ed25519 key
-//!   (signs join messages); its id is a hash of both public keys.
-//! - Joining: the new device posts a request, an existing device posts an
-//!   offer, and both compute a 4-digit code from the two devices' keys and the
-//!   request nonce. The approver types what the new screen shows; three wrong
-//!   tries void the request. Approval wraps the settings key to the new
-//!   device's x25519 key. Tokens and passwords are never part of this.
-//! - Recovery: a printed 128-bit code unwraps the settings key stored in the
-//!   folder. A new code is issued whenever the key rotates.
-//! - Removing a device rotates the key: the new key is wrapped for each device
-//!   that stays, authenticated by a proof sealed under the old key, and every
-//!   older message is deleted. A device that finds only a newer epoch it cannot
-//!   open must join again.
-//! - Leases keep scheduled work on one device. A lease is valid until its
-//!   expiry; the main device's lease beats any other, otherwise the earliest
-//!   one wins.
+//! One random settings key per person, versioned by an epoch, seals every
+//! change, snapshot, device record and lease (XChaCha20-Poly1305, with kind,
+//! epoch, sender and folder as associated data). Merging is per key, last
+//! writer wins on a hybrid clock; stamps more than a day ahead are ignored.
 //!
-//! One [`Replica`] per folder. The sync account's folder carries devices, joins
-//! and leases as well as settings; the folder of every other account only
-//! carries that account's settings, sealed with the same key.
+//! A device is an x25519 key and an ed25519 key, and its id is a hash of both.
+//! Device records are signed by their own device and checked against their
+//! id, so nobody can write another device's record.
+//!
+//! Joining: the new device commits to a secret in its request. A device that
+//! offers adds a random value of its own, and only then does the new device
+//! publish the secret. Both show a 4-digit code made from the secret, the
+//! random value, the request and all four public keys; the approver types the
+//! new device's code, and the new device takes a key only from the approver
+//! whose code the person typed, and only after finding that approver's signed
+//! device record under it. The commitment stops anyone from picking a request
+//! to fit a code, and approvals are signed against the offer they answer.
+//!
+//! Removing a device wraps a new key for the devices the person was shown and
+//! deletes everything the old key protected. A printed recovery code unwraps
+//! the key without another device.
+//!
+//! Leases keep scheduled work on one device: the lease first in the folder
+//! holds, and the main computer asks the holder to step aside instead of
+//! taking over. Clocks only decide when a lease has run out, with a margin.
+//!
+//! What a person with only the mailbox password can still do is delete
+//! messages and write ones nobody opens; they cannot read or change settings,
+//! join a device or move a lease.
 
 mod crypto;
 mod folder;
