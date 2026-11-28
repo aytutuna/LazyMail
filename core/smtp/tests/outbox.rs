@@ -238,6 +238,145 @@ async fn graph_accounts_have_no_smtp() {
     assert!(matches!(err, Some(SendError::Permanent(_))));
 }
 
+#[tokio::test]
+async fn scheduled_mail_taken_over_at_its_due_time_is_looked_up_in_sent_first() {
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let m = mail("a@example.test", "scheduled");
+    st.outbox_enqueue_scheduled(&m.message_id, &m.raw, 5000)
+        .unwrap();
+    sent.known.lock().unwrap().push(m.message_id.clone());
+
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    let r = ob
+        .run(&mut acc, &mut SignIn::default(), 5000)
+        .await
+        .unwrap();
+    assert_eq!((r.sent, r.retry, r.failed), (1, 0, 0));
+    assert!(st.outbox_list().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mail_scheduled_far_ahead_gets_its_retries() {
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let m = mail("a@example.test", "friday");
+    let id = st.outbox_enqueue(&m.message_id, &m.raw, 1000).unwrap();
+    let due = 1000 + 5 * 86400;
+    st.outbox_requeue(id, due).unwrap();
+
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    let r = ob.run(&mut acc, &mut SignIn::default(), due).await.unwrap();
+    assert_eq!((r.retry, r.failed), (1, 0));
+    let item = st.outbox_item(id).unwrap().unwrap();
+    assert_eq!(item.state, OutboxState::Queued);
+    assert!(!item.last_error.unwrap().contains("gave up"));
+}
+
+#[tokio::test]
+async fn an_interrupted_send_is_parked_unless_the_provider_files_sent_mail() {
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let m = mail("a@example.test", "interrupted");
+
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    let id = st.outbox_enqueue(&m.message_id, &m.raw, 10).unwrap();
+    st.outbox_begin_send(id, 10).unwrap();
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    ob.recover(&acc, 50).unwrap();
+    let item = st.outbox_item(id).unwrap().unwrap();
+    assert_eq!(item.state, OutboxState::Failed);
+    assert!(item
+        .last_error
+        .unwrap()
+        .contains("may already have been sent"));
+    let r = ob.run(&mut acc, &mut SignIn::default(), 60).await.unwrap();
+    assert_eq!((r.sent, r.retry, r.failed), (0, 0, 0));
+
+    // Gmail and Microsoft file the copy themselves, so Sent can settle it.
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, true);
+    let id = st.outbox_enqueue(&m.message_id, &m.raw, 10).unwrap();
+    st.outbox_begin_send(id, 10).unwrap();
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    ob.recover(&acc, 50).unwrap();
+    let item = st.outbox_item(id).unwrap().unwrap();
+    assert_eq!((item.state, item.check_sent), (OutboxState::Queued, true));
+    sent.known.lock().unwrap().push(m.message_id.clone());
+    let r = ob.run(&mut acc, &mut SignIn::default(), 60).await.unwrap();
+    assert_eq!(r.sent, 1);
+    assert!(st.outbox_list().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_run_leaves_a_send_in_flight_alone() {
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let m = mail("a@example.test", "busy");
+    let id = st.outbox_enqueue(&m.message_id, &m.raw, 10).unwrap();
+    st.outbox_begin_send(id, 10).unwrap();
+
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    let r = ob.run(&mut acc, &mut SignIn::default(), 20).await.unwrap();
+    assert_eq!((r.sent, r.retry, r.failed), (0, 0, 0));
+    assert_eq!(
+        st.outbox_item(id).unwrap().unwrap().state,
+        OutboxState::Sending
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_server_puts_the_whole_queue_back_without_more_attempts() {
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let ids: Vec<_> = (0..3)
+        .map(|i| {
+            let m = mail("a@example.test", &format!("m{i}"));
+            st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap()
+        })
+        .collect();
+
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    let r = ob.run(&mut acc, &mut SignIn::default(), 100).await.unwrap();
+    assert_eq!(r.retry, 3);
+    for id in ids {
+        let item = st.outbox_item(id).unwrap().unwrap();
+        assert_eq!(
+            (item.state, item.attempts, item.next_try),
+            (OutboxState::Queued, 1, 160)
+        );
+        assert!(item.last_error.is_some());
+    }
+}
+
+#[tokio::test]
+async fn an_account_without_an_smtp_server_says_so_on_its_mail() {
+    let dir = TempDir::new().unwrap();
+    let st = store(&dir);
+    let mut acc = account("a", &closed_port(), Security::StartTls, false);
+    acc.settings = None;
+    let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+    let m = mail("a@example.test", "nowhere");
+    let id = st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap();
+
+    let ob = outbox(&st, &tokens, &sent, "pw", None);
+    let r = ob.run(&mut acc, &mut SignIn::default(), 100).await.unwrap();
+    assert_eq!(r.failed, 1);
+    let item = st.outbox_item(id).unwrap().unwrap();
+    assert_eq!(item.state, OutboxState::Failed);
+    assert!(item.last_error.unwrap().contains("no SMTP server"));
+}
+
 mod sink {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -417,15 +556,7 @@ mod sink {
     async fn a_connection_lost_after_the_message_is_unsure() {
         let s = sink();
         let acc = s.account(Security::StartTls, false);
-        let m = build(&Draft {
-            from: Some(Address::new(&acc.address)),
-            to: vec![Address::new("drop@example.test")],
-            subject: "dropped".into(),
-            text: Some("hello".into()),
-            date: 1_700_000_000,
-            ..Draft::default()
-        })
-        .unwrap();
+        let m = dropped(&acc.address);
         let mut smtp = Smtp::new(
             &acc,
             &Auth::Password(s.pass.clone()),
@@ -492,9 +623,17 @@ mod sink {
         st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap();
 
         let ob = outbox(&st, &tokens, &sent, &s.pass, Some(s.cert.clone()));
-        let r = ob.run(&mut acc, &mut SignIn::default(), 100).await.unwrap();
+        let mut signin = SignIn::default();
+        let r = ob.run(&mut acc, &mut signin, 100).await.unwrap();
         assert_eq!((r.sent, r.copies_pending), (1, 0));
         assert_eq!(s.with_id(&m.message_id).len(), 1);
+
+        // The server gets 30 seconds to file its own copy.
+        let r = ob.run(&mut acc, &mut signin, 129).await.unwrap();
+        assert_eq!(r.copies_pending, 1);
+        assert!(sent.appended.lock().unwrap().is_empty());
+        let r = ob.run(&mut acc, &mut signin, 130).await.unwrap();
+        assert_eq!(r.copies_pending, 0);
         assert!(st.outbox_list().unwrap().is_empty());
         let copies = sent.appended.lock().unwrap();
         assert_eq!(copies.len(), 1);
@@ -536,7 +675,9 @@ mod sink {
         let ob = outbox(&st, &tokens, &sent, &s.pass, Some(s.cert.clone()));
         let mut signin = SignIn::default();
         let r = ob.run(&mut acc, &mut signin, 100).await.unwrap();
-        assert_eq!((r.sent, r.copies_pending), (1, 1));
+        assert_eq!(r.sent, 1);
+        let r = ob.run(&mut acc, &mut signin, 130).await.unwrap();
+        assert_eq!((r.sent, r.copies_pending), (0, 1));
         assert_eq!(
             st.outbox_item(id).unwrap().unwrap().state,
             OutboxState::Sent
@@ -600,5 +741,90 @@ mod sink {
         assert_eq!(r.sent, 1);
         assert_eq!(s.with_id(&m.message_id).len(), 1);
         assert!(!signin.work_paused("a"));
+    }
+
+    fn dropped(from: &str) -> lazymail_smtp::Built {
+        build(&Draft {
+            from: Some(Address::new(from)),
+            to: vec![Address::new("drop@example.test")],
+            subject: "dropped".into(),
+            text: Some("hello".into()),
+            date: 1_700_000_000,
+            ..Draft::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn mail_that_may_have_been_sent_is_not_sent_again() {
+        let s = sink();
+        let dir = TempDir::new().unwrap();
+        let st = store(&dir);
+        let mut acc = s.account(Security::StartTls, false);
+        let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+        let m = dropped(&acc.address);
+        let id = st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap();
+
+        let ob = outbox(&st, &tokens, &sent, &s.pass, Some(s.cert.clone()));
+        let mut signin = SignIn::default();
+        let r = ob.run(&mut acc, &mut signin, 100).await.unwrap();
+        assert_eq!((r.sent, r.retry, r.failed), (0, 0, 1));
+        let item = st.outbox_item(id).unwrap().unwrap();
+        assert_eq!(item.state, OutboxState::Failed);
+        assert!(item
+            .last_error
+            .unwrap()
+            .contains("may already have been sent"));
+
+        // Nothing sends it again by itself.
+        ob.run(&mut acc, &mut signin, 100 + 7200).await.unwrap();
+        assert_eq!(s.with_id(&m.message_id).len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn where_the_provider_files_sent_mail_an_unsure_send_looks_in_sent_next() {
+        let s = sink();
+        let dir = TempDir::new().unwrap();
+        let st = store(&dir);
+        let mut acc = s.account(Security::StartTls, true);
+        let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+        let m = dropped(&acc.address);
+        let id = st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap();
+
+        let ob = outbox(&st, &tokens, &sent, &s.pass, Some(s.cert.clone()));
+        let mut signin = SignIn::default();
+        let r = ob.run(&mut acc, &mut signin, 100).await.unwrap();
+        assert_eq!((r.sent, r.retry, r.failed), (0, 1, 0));
+        let item = st.outbox_item(id).unwrap().unwrap();
+        assert_eq!(item.state, OutboxState::Queued);
+        assert!(item.check_sent);
+
+        sent.known.lock().unwrap().push(m.message_id.clone());
+        let r = ob.run(&mut acc, &mut signin, 100 + 60).await.unwrap();
+        assert_eq!(r.sent, 1);
+        assert!(st.outbox_list().unwrap().is_empty());
+        assert_eq!(s.with_id(&m.message_id).len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn a_copy_the_server_filed_itself_is_not_appended() {
+        let s = sink();
+        let dir = TempDir::new().unwrap();
+        let st = store(&dir);
+        let mut acc = s.account(Security::StartTls, false);
+        let (tokens, sent) = (StaticTokens::default(), FakeSent::default());
+        let m = mail(&acc.address, "filed-by-server");
+        st.outbox_enqueue(&m.message_id, &m.raw, 100).unwrap();
+
+        let ob = outbox(&st, &tokens, &sent, &s.pass, Some(s.cert.clone()));
+        let mut signin = SignIn::default();
+        ob.run(&mut acc, &mut signin, 100).await.unwrap();
+        sent.known.lock().unwrap().push(m.message_id.clone());
+        ob.run(&mut acc, &mut signin, 130).await.unwrap();
+        assert!(st.outbox_list().unwrap().is_empty());
+        assert!(sent.appended.lock().unwrap().is_empty());
     }
 }
