@@ -1,0 +1,12 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.mailFolder)",
+  "@odata.deltaLink": "{{base}}/me/mailFolders/delta?$deltatoken=folders-tree",
+  "value": [
+    { "id": "inbox-id", "displayName": "Inbox", "parentFolderId": "root-id" },
+    { "id": "sent-id", "displayName": "Sent Items", "parentFolderId": "root-id" },
+    { "id": "inbox-2026-id", "displayName": "2026", "parentFolderId": "inbox-id" },
+    { "id": "sent-2026-id", "displayName": "2026", "parentFolderId": "sent-id" },
+    { "id": "outbox-id", "displayName": "Outbox", "parentFolderId": "root-id" },
+    { "id": "issues-id", "displayName": "Sync Issues", "parentFolderId": "root-id" }
+  ]
+}

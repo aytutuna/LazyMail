@@ -1,0 +1,20 @@
+{
+  "@odata.context": "{{base}}/$metadata#Collection(microsoft.graph.message)",
+  "@odata.deltaLink": "{{base}}/me/mailFolders/inbox-id/messages/delta?$deltatoken=inbox-1",
+  "value": [
+    {
+      "id": "AAMkAGI2TGuNAAA=",
+      "internetMessageId": "<77aa10@newsletter.example>",
+      "subject": "Weekly digest",
+      "receivedDateTime": "2026-03-02T06:00:00Z",
+      "isRead": false,
+      "isDraft": false,
+      "flag": { "flagStatus": "notFlagged" },
+      "from": { "emailAddress": { "name": "Digest", "address": "digest@newsletter.example" } },
+      "toRecipients": [
+        { "emailAddress": { "name": "Alex Wilber", "address": "alexw@contoso.example" } }
+      ],
+      "ccRecipients": []
+    }
+  ]
+}
